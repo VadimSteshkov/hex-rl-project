@@ -5,19 +5,42 @@ import csv
 import torch
 
 from hex_engine import hexPosition, RED, BLUE, EMPTY
-from models import DQN, board_to_tensor
+from models import DQN, ConvDQN, board_to_tensor, board_to_spatial_tensor
 from agents import random_agent, center_agent
 
+
+# =========================
+# Config
+# =========================
 
 BOARD_SIZE = 7
 N_GAMES = 200
 
+USE_CNN = True
+USE_REWARD_SHAPING = True
+
 RESULTS_DIR = "results"
-MODEL_PATH = os.path.join(RESULTS_DIR, "phase4_model_7x7.pt")
-CSV_PATH = os.path.join(RESULTS_DIR, "phase4_evaluation_results_7x7.csv")
+
+# =========================
+# Experiment naming
+# =========================
+
+ARCH_NAME = "cnn" if USE_CNN else "mlp"
+SHAPING_NAME = "reward_shaping_path_block" if USE_REWARD_SHAPING else "no_shaping"
+EXPERIMENT_NAME = f"phase5_{ARCH_NAME}_{SHAPING_NAME}_{BOARD_SIZE}x{BOARD_SIZE}"
+
+MODEL_FILE = f"{EXPERIMENT_NAME}.pt"
+CSV_FILE = f"{EXPERIMENT_NAME}_evaluation_results.csv"
+
+MODEL_PATH = os.path.join(RESULTS_DIR, MODEL_FILE)
+CSV_PATH = os.path.join(RESULTS_DIR, CSV_FILE)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+
+# =========================
+# Helper functions
+# =========================
 
 def transform_move_for_blue(move, board_size):
     row, col = move
@@ -61,7 +84,10 @@ def inverse_canonical_move(move, player, board_size):
 
 
 def load_model():
-    model = DQN(board_size=BOARD_SIZE).to(DEVICE)
+    if USE_CNN:
+        model = ConvDQN(board_size=BOARD_SIZE).to(DEVICE)
+    else:
+        model = DQN(board_size=BOARD_SIZE).to(DEVICE)
 
     checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
 
@@ -79,7 +105,11 @@ def dqn_agent(board, action_set, player, model):
     valid_actions = canonical_action_set(action_set, player, BOARD_SIZE)
 
     with torch.no_grad():
-        state_tensor = board_to_tensor(state, device=DEVICE)
+        if USE_CNN:
+            state_tensor = board_to_spatial_tensor(state, device=DEVICE)
+        else:
+            state_tensor = board_to_tensor(state, device=DEVICE)
+
         q_values = model(state_tensor).squeeze(0)
 
     best_move = None
@@ -152,19 +182,27 @@ def evaluate_against(opponent_name, opponent_agent, model):
     }
 
 
+# =========================
+# Main evaluation
+# =========================
+
 def main():
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(
-            f"Model not found: {MODEL_PATH}. Run train_phase4.py first."
+            f"Model not found: {MODEL_PATH}. "
+            f"Run train_phase4.py first with the same experiment settings."
         )
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     print(f"Using device: {DEVICE}")
+    print(f"Experiment: {EXPERIMENT_NAME}")
+    print(f"Evaluating Model: {'ConvDQN' if USE_CNN else 'DQN'}")
+    print(f"Reward shaping during training: {'ON' if USE_REWARD_SHAPING else 'OFF'}")
     print(f"Loading model from: {MODEL_PATH}")
+    print(f"CSV output: {CSV_PATH}")
 
     model = load_model()
-
     results = []
 
     results.append(
@@ -183,12 +221,12 @@ def main():
         )
     )
 
-    print("\nPhase 4 Evaluation Results")
+    print("\nPhase 5 Evaluation Results")
     print("-" * 60)
 
     for result in results:
         print(
-            f"DQN vs {result['opponent']}: "
+            f"{'ConvDQN' if USE_CNN else 'DQN'} vs {result['opponent']}: "
             f"{result['dqn_wins']} / {result['games']} wins "
             f"= {result['win_rate']:.3f}"
         )
