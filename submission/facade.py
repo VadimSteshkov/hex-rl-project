@@ -3,7 +3,7 @@ import random
 import torch
 
 from hex_engine import RED, BLUE, EMPTY
-from models import DQN, board_to_tensor
+from models import DQN, ConvDQN, board_to_tensor, board_to_spatial_tensor
 
 
 _MODEL_CACHE = {}
@@ -15,7 +15,15 @@ def _get_project_root():
 
 def _get_model_path():
     project_root = _get_project_root()
-    return os.path.join(project_root, "results", "phase4_model_7x7.pt")
+    results_dir = os.path.join(project_root, "results")
+
+    # Try Phase 5B CNN model first, then fall back to MLP
+    cnn_path = os.path.join(results_dir, "phase4_model_cnn_7x7.pt")
+    mlp_path = os.path.join(results_dir, "phase4_model_7x7.pt")
+
+    if os.path.exists(cnn_path):
+        return cnn_path
+    return mlp_path
 
 
 def _transform_move_for_blue(move, board_size):
@@ -88,7 +96,12 @@ def _load_model(board_size):
     if checkpoint_board_size != board_size:
         return None
 
-    model = DQN(board_size=board_size)
+    use_cnn = checkpoint.get("use_cnn", False)
+
+    if use_cnn:
+        model = ConvDQN(board_size=board_size)
+    else:
+        model = DQN(board_size=board_size)
 
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -96,9 +109,9 @@ def _load_model(board_size):
         model.load_state_dict(checkpoint)
 
     model.eval()
-    _MODEL_CACHE[board_size] = model
+    _MODEL_CACHE[board_size] = (model, use_cnn)
 
-    return model
+    return model, use_cnn
 
 
 def _infer_current_player(board, action_set):
@@ -138,10 +151,12 @@ def agent(board, action_set):
         return None
 
     board_size = len(board)
-    model = _load_model(board_size)
+    result = _load_model(board_size)
 
-    if model is None:
+    if result is None:
         return _center_fallback_agent(board, action_set)
+
+    model, use_cnn = result
 
     player = _infer_current_player(board, action_set)
 
@@ -149,7 +164,10 @@ def agent(board, action_set):
     valid_actions = _canonical_action_set(action_set, player, board_size)
 
     with torch.no_grad():
-        state_tensor = board_to_tensor(state, device="cpu")
+        if use_cnn:
+            state_tensor = board_to_spatial_tensor(state, device="cpu")
+        else:
+            state_tensor = board_to_tensor(state, device="cpu")
         q_values = model(state_tensor).squeeze(0)
 
     best_move = None
