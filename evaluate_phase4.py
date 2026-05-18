@@ -8,20 +8,39 @@ from hex_engine import hexPosition, RED, BLUE, EMPTY
 from models import DQN, ConvDQN, board_to_tensor, board_to_spatial_tensor
 from agents import random_agent, center_agent
 
+
+# =========================
+# Config
+# =========================
+
 BOARD_SIZE = 7
 N_GAMES = 200
 
-USE_CNN = True  # <--- TOGGLE THIS TO MATCH THE MODEL YOU WANT TO EVALUATE
+USE_CNN = True
+USE_REWARD_SHAPING = True
 
 RESULTS_DIR = "results"
-MODEL_FILE = f"phase4_model{'_cnn' if USE_CNN else ''}.pt"
-CSV_FILE = f"phase4_evaluation_results{'_cnn' if USE_CNN else ''}_7x7.csv"
+
+# =========================
+# Experiment naming
+# =========================
+
+ARCH_NAME = "cnn" if USE_CNN else "mlp"
+SHAPING_NAME = "reward_shaping_path_block" if USE_REWARD_SHAPING else "no_shaping"
+EXPERIMENT_NAME = f"phase5_{ARCH_NAME}_{SHAPING_NAME}_{BOARD_SIZE}x{BOARD_SIZE}"
+
+MODEL_FILE = f"{EXPERIMENT_NAME}.pt"
+CSV_FILE = f"{EXPERIMENT_NAME}_evaluation_results.csv"
 
 MODEL_PATH = os.path.join(RESULTS_DIR, MODEL_FILE)
 CSV_PATH = os.path.join(RESULTS_DIR, CSV_FILE)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+
+# =========================
+# Helper functions
+# =========================
 
 def transform_move_for_blue(move, board_size):
     row, col = move
@@ -53,12 +72,14 @@ def canonical_board(board, player):
 def canonical_action_set(action_set, player, board_size):
     if player == RED:
         return action_set
+
     return [transform_move_for_blue(move, board_size) for move in action_set]
 
 
 def inverse_canonical_move(move, player, board_size):
     if player == RED:
         return move
+
     return transform_move_for_blue(move, board_size)
 
 
@@ -161,17 +182,25 @@ def evaluate_against(opponent_name, opponent_agent, model):
     }
 
 
+# =========================
+# Main evaluation
+# =========================
+
 def main():
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(
-            f"Model not found: {MODEL_PATH}. Run train_phase4.py first with matching USE_CNN setting."
+            f"Model not found: {MODEL_PATH}. "
+            f"Run train_phase4.py first with the same experiment settings."
         )
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     print(f"Using device: {DEVICE}")
+    print(f"Experiment: {EXPERIMENT_NAME}")
     print(f"Evaluating Model: {'ConvDQN' if USE_CNN else 'DQN'}")
+    print(f"Reward shaping during training: {'ON' if USE_REWARD_SHAPING else 'OFF'}")
     print(f"Loading model from: {MODEL_PATH}")
+    print(f"CSV output: {CSV_PATH}")
 
     model = load_model()
     results = []
@@ -192,7 +221,7 @@ def main():
         )
     )
 
-    print("\nPhase 4 Evaluation Results")
+    print("\nPhase 5 Evaluation Results")
     print("-" * 60)
 
     for result in results:
