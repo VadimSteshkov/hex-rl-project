@@ -33,3 +33,7 @@ Thumbs.db
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Documentation (generated/local)
+documentation.md
+RULES.md
