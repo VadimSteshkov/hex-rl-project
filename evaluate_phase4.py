@@ -5,16 +5,20 @@ import csv
 import torch
 
 from hex_engine import hexPosition, RED, BLUE, EMPTY
-from models import DQN, board_to_tensor
+from models import DQN, ConvDQN, board_to_tensor, board_to_spatial_tensor
 from agents import random_agent, center_agent
-
 
 BOARD_SIZE = 7
 N_GAMES = 200
 
+USE_CNN = True  # <--- TOGGLE THIS TO MATCH THE MODEL YOU WANT TO EVALUATE
+
 RESULTS_DIR = "results"
-MODEL_PATH = os.path.join(RESULTS_DIR, "phase4_model_7x7.pt")
-CSV_PATH = os.path.join(RESULTS_DIR, "phase4_evaluation_results_7x7.csv")
+MODEL_FILE = f"phase4_model{'_cnn' if USE_CNN else ''}.pt"
+CSV_FILE = f"phase4_evaluation_results{'_cnn' if USE_CNN else ''}_7x7.csv"
+
+MODEL_PATH = os.path.join(RESULTS_DIR, MODEL_FILE)
+CSV_PATH = os.path.join(RESULTS_DIR, CSV_FILE)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -49,19 +53,20 @@ def canonical_board(board, player):
 def canonical_action_set(action_set, player, board_size):
     if player == RED:
         return action_set
-
     return [transform_move_for_blue(move, board_size) for move in action_set]
 
 
 def inverse_canonical_move(move, player, board_size):
     if player == RED:
         return move
-
     return transform_move_for_blue(move, board_size)
 
 
 def load_model():
-    model = DQN(board_size=BOARD_SIZE).to(DEVICE)
+    if USE_CNN:
+        model = ConvDQN(board_size=BOARD_SIZE).to(DEVICE)
+    else:
+        model = DQN(board_size=BOARD_SIZE).to(DEVICE)
 
     checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
 
@@ -79,7 +84,11 @@ def dqn_agent(board, action_set, player, model):
     valid_actions = canonical_action_set(action_set, player, BOARD_SIZE)
 
     with torch.no_grad():
-        state_tensor = board_to_tensor(state, device=DEVICE)
+        if USE_CNN:
+            state_tensor = board_to_spatial_tensor(state, device=DEVICE)
+        else:
+            state_tensor = board_to_tensor(state, device=DEVICE)
+
         q_values = model(state_tensor).squeeze(0)
 
     best_move = None
@@ -155,16 +164,16 @@ def evaluate_against(opponent_name, opponent_agent, model):
 def main():
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(
-            f"Model not found: {MODEL_PATH}. Run train_phase4.py first."
+            f"Model not found: {MODEL_PATH}. Run train_phase4.py first with matching USE_CNN setting."
         )
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     print(f"Using device: {DEVICE}")
+    print(f"Evaluating Model: {'ConvDQN' if USE_CNN else 'DQN'}")
     print(f"Loading model from: {MODEL_PATH}")
 
     model = load_model()
-
     results = []
 
     results.append(
@@ -188,7 +197,7 @@ def main():
 
     for result in results:
         print(
-            f"DQN vs {result['opponent']}: "
+            f"{'ConvDQN' if USE_CNN else 'DQN'} vs {result['opponent']}: "
             f"{result['dqn_wins']} / {result['games']} wins "
             f"= {result['win_rate']:.3f}"
         )

@@ -9,12 +9,14 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 
 from hex_engine import hexPosition, RED, BLUE, EMPTY
-from models import DQN
+from models import DQN, ConvDQN, board_to_spatial_tensor
 
 
 # =========================
 # Config
 # =========================
+
+USE_CNN = True  # <--- TOGGLE THIS TO SWITCH BETWEEN MLP AND CNN
 
 BOARD_SIZE = 7
 EPISODES = 6000
@@ -31,8 +33,13 @@ EPS_DECAY = 0.995
 TARGET_UPDATE_EVERY = 100
 
 RESULTS_DIR = "results"
-MODEL_PATH = os.path.join(RESULTS_DIR, "phase4_model.pt")
-CURVE_PATH = os.path.join(RESULTS_DIR, "phase4_learning_curve.png")
+
+# Dynamic paths based on the toggle
+MODEL_FILE = "phase4_model_cnn.pt" if USE_CNN else "phase4_model.pt"
+CURVE_FILE = "phase4_learning_curve_cnn.png" if USE_CNN else "phase4_learning_curve.png"
+
+MODEL_PATH = os.path.join(RESULTS_DIR, MODEL_FILE)
+CURVE_PATH = os.path.join(RESULTS_DIR, CURVE_FILE)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -64,25 +71,11 @@ def index_to_move(index, board_size):
 
 
 def transform_move_for_blue(move, board_size):
-    """
-    Same transformation as recode_coordinates in hex_engine.py.
-    Used to view BLUE as RED.
-    """
     row, col = move
     return board_size - 1 - col, board_size - 1 - row
 
 
 def canonical_board(board, player):
-    """
-    Convert board to the current agent's perspective.
-
-    If player is RED:
-        board stays the same.
-
-    If player is BLUE:
-        board is transformed so that BLUE becomes the RED-like player.
-        This makes the model learn one common perspective.
-    """
     size = len(board)
 
     if player == RED:
@@ -105,41 +98,28 @@ def canonical_board(board, player):
 
 
 def canonical_action_set(action_set, player, board_size):
-    """
-    Convert valid moves into the canonical perspective.
-    """
     if player == RED:
         return action_set
-
     return [transform_move_for_blue(move, board_size) for move in action_set]
 
 
 def inverse_canonical_move(move, player, board_size):
-    """
-    Convert canonical move back to the real board coordinates.
-    The transformation is symmetric, so we can reuse the same function for BLUE.
-    """
     if player == RED:
         return move
-
     return transform_move_for_blue(move, board_size)
 
 
 def state_to_tensor(state):
     """
-    Convert board state to tensor.
-    Shape:
-        (1, board_size * board_size)
+    Convert board state to tensor depending on the active model toggle.
     """
-    return torch.tensor(state, dtype=torch.float32, device=DEVICE).flatten().unsqueeze(0)
+    if USE_CNN:
+        return board_to_spatial_tensor(state, device=DEVICE)
+    else:
+        return torch.tensor(state, dtype=torch.float32, device=DEVICE).flatten().unsqueeze(0)
 
 
 def choose_action(model, state, valid_actions, epsilon):
-    """
-    Epsilon-greedy action selection.
-    The model predicts Q-values for all cells,
-    but we only select from valid actions.
-    """
     board_size = state.shape[0]
 
     if random.random() < epsilon:
@@ -227,12 +207,6 @@ def optimize_model(policy_net, target_net, optimizer, memory):
 
 
 def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, agent_color):
-    """
-    One training episode.
-
-    The DQN agent plays either RED or BLUE.
-    The opponent is random.
-    """
     game = hexPosition(size=BOARD_SIZE)
 
     total_loss = []
@@ -270,7 +244,6 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
 
             if game.winner != EMPTY:
                 reward = 1.0 if game.winner == agent_color else -1.0
-
                 memory.append(
                     Transition(
                         state=state,
@@ -281,17 +254,14 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
                         done=True
                     )
                 )
-
                 agent_won = 1 if game.winner == agent_color else 0
                 break
 
-            # Random opponent move
             opponent_move = random.choice(game.get_action_space())
             game.move(opponent_move)
 
             if game.winner != EMPTY:
                 reward = -1.0
-
                 memory.append(
                     Transition(
                         state=state,
@@ -302,7 +272,6 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
                         done=True
                     )
                 )
-
                 agent_won = 0
                 break
 
@@ -331,7 +300,6 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
                 total_loss.append(loss)
 
         else:
-            # If the random opponent starts first
             opponent_move = random.choice(game.get_action_space())
             game.move(opponent_move)
 
@@ -343,7 +311,6 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
 def moving_average(values, window=100):
     if len(values) < window:
         return values
-
     return np.convolve(values, np.ones(window) / window, mode="valid")
 
 
@@ -353,30 +320,32 @@ def moving_average(values, window=100):
 
 def main():
     set_seed(42)
-
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     print(f"Using device: {DEVICE}")
-    print(f"Training DQN on Hex {BOARD_SIZE}x{BOARD_SIZE}")
+    print(f"Model Architecture: {'CNN' if USE_CNN else 'MLP (Dense)'}")
+    print(f"Training on Hex {BOARD_SIZE}x{BOARD_SIZE}")
     print(f"Episodes: {EPISODES}")
 
-    policy_net = DQN(board_size=BOARD_SIZE).to(DEVICE)
-    target_net = DQN(board_size=BOARD_SIZE).to(DEVICE)
+    # Conditionally instantiate the correct model architecture
+    if USE_CNN:
+        policy_net = ConvDQN(board_size=BOARD_SIZE).to(DEVICE)
+        target_net = ConvDQN(board_size=BOARD_SIZE).to(DEVICE)
+    else:
+        policy_net = DQN(board_size=BOARD_SIZE).to(DEVICE)
+        target_net = DQN(board_size=BOARD_SIZE).to(DEVICE)
 
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
     optimizer = optim.Adam(policy_net.parameters(), lr=LR)
-
     memory = deque(maxlen=MEMORY_SIZE)
-
     epsilon = EPS_START
 
     wins = []
     losses = []
 
     for episode in range(1, EPISODES + 1):
-        # Train sometimes as RED, sometimes as BLUE
         agent_color = RED if episode % 2 == 0 else BLUE
 
         won, loss = play_training_episode(
@@ -407,7 +376,6 @@ def main():
                 f"Epsilon: {epsilon:.3f}"
             )
 
-    # Save model
     torch.save(
         {
             "model_state_dict": policy_net.state_dict(),
@@ -419,14 +387,13 @@ def main():
 
     print(f"\nModel saved to: {MODEL_PATH}")
 
-    # Save learning curve
     win_rate_curve = moving_average(wins, window=100)
 
     plt.figure(figsize=(8, 5))
     plt.plot(win_rate_curve)
     plt.xlabel("Episode")
     plt.ylabel("Win rate moving average")
-    plt.title("Phase 4 DQN Training Curve")
+    plt.title(f"Phase 4 {'ConvDQN' if USE_CNN else 'DQN'} Training Curve")
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(CURVE_PATH)

@@ -3,10 +3,11 @@ import random
 import torch
 
 from hex_engine import RED, BLUE, EMPTY
-from models import DQN, board_to_tensor
-
+from models import DQN, ConvDQN, board_to_tensor, board_to_spatial_tensor
 
 _MODEL_CACHE = {}
+
+USE_CNN = True  # <--- SET THIS TO DETERMINE WHICH AGENT IS LOADED IN PYGAME / AUTOGRADER
 
 
 def _get_project_root():
@@ -15,7 +16,8 @@ def _get_project_root():
 
 def _get_model_path():
     project_root = _get_project_root()
-    return os.path.join(project_root, "results", "phase4_model_7x7.pt")
+    filename = "phase4_model_cnn.pt" if USE_CNN else "phase4_model_7x7.pt"
+    return os.path.join(project_root, "results", filename)
 
 
 def _transform_move_for_blue(move, board_size):
@@ -48,14 +50,12 @@ def _canonical_board(board, player):
 def _canonical_action_set(action_set, player, board_size):
     if player == RED:
         return action_set
-
     return [_transform_move_for_blue(move, board_size) for move in action_set]
 
 
 def _inverse_canonical_move(move, player, board_size):
     if player == RED:
         return move
-
     return _transform_move_for_blue(move, board_size)
 
 
@@ -82,13 +82,15 @@ def _load_model(board_size):
         return None
 
     checkpoint = torch.load(model_path, map_location="cpu")
-
     checkpoint_board_size = checkpoint.get("board_size", board_size)
 
     if checkpoint_board_size != board_size:
         return None
 
-    model = DQN(board_size=board_size)
+    if USE_CNN:
+        model = ConvDQN(board_size=board_size)
+    else:
+        model = DQN(board_size=board_size)
 
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -133,7 +135,6 @@ def agent(board, action_set):
     Required signature:
         agent(board, action_set) -> move
     """
-
     if not action_set:
         return None
 
@@ -149,7 +150,11 @@ def agent(board, action_set):
     valid_actions = _canonical_action_set(action_set, player, board_size)
 
     with torch.no_grad():
-        state_tensor = board_to_tensor(state, device="cpu")
+        if USE_CNN:
+            state_tensor = board_to_spatial_tensor(state, device="cpu")
+        else:
+            state_tensor = board_to_tensor(state, device="cpu")
+
         q_values = model(state_tensor).squeeze(0)
 
     best_move = None
