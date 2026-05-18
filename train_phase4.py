@@ -1,5 +1,6 @@
 import os
 import random
+import heapq
 from collections import deque, namedtuple
 
 import numpy as np
@@ -9,12 +10,14 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 
 from hex_engine import hexPosition, RED, BLUE, EMPTY
-from models import DQN
+from models import DQN, ConvDQN, board_to_spatial_tensor
 
 
 # =========================
 # Config
 # =========================
+
+USE_CNN = True  # True = CNN, False = MLP
 
 BOARD_SIZE = 7
 EPISODES = 6000
@@ -30,9 +33,31 @@ EPS_DECAY = 0.995
 
 TARGET_UPDATE_EVERY = 100
 
+# Reward shaping
+USE_REWARD_SHAPING = True
+
+CENTER_REWARD_WEIGHT = 0.03
+STONE_PROGRESS_REWARD = 0.02
+PATH_REWARD_WEIGHT = 0.05
+BLOCK_REWARD_WEIGHT = 0.04
+
 RESULTS_DIR = "results"
-MODEL_PATH = os.path.join(RESULTS_DIR, "phase4_model.pt")
-CURVE_PATH = os.path.join(RESULTS_DIR, "phase4_learning_curve.png")
+
+
+# =========================
+# Experiment naming
+# =========================
+
+ARCH_NAME = "cnn" if USE_CNN else "mlp"
+SHAPING_NAME = "reward_shaping_path_block" if USE_REWARD_SHAPING else "no_shaping"
+
+EXPERIMENT_NAME = f"phase5_{ARCH_NAME}_{SHAPING_NAME}_{BOARD_SIZE}x{BOARD_SIZE}"
+
+MODEL_FILE = f"{EXPERIMENT_NAME}.pt"
+CURVE_FILE = f"{EXPERIMENT_NAME}_learning_curve.png"
+
+MODEL_PATH = os.path.join(RESULTS_DIR, MODEL_FILE)
+CURVE_PATH = os.path.join(RESULTS_DIR, CURVE_FILE)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -51,6 +76,9 @@ def set_seed(seed=42):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
 
 def move_to_index(move, board_size):
     row, col = move
@@ -64,25 +92,11 @@ def index_to_move(index, board_size):
 
 
 def transform_move_for_blue(move, board_size):
-    """
-    Same transformation as recode_coordinates in hex_engine.py.
-    Used to view BLUE as RED.
-    """
     row, col = move
     return board_size - 1 - col, board_size - 1 - row
 
 
 def canonical_board(board, player):
-    """
-    Convert board to the current agent's perspective.
-
-    If player is RED:
-        board stays the same.
-
-    If player is BLUE:
-        board is transformed so that BLUE becomes the RED-like player.
-        This makes the model learn one common perspective.
-    """
     size = len(board)
 
     if player == RED:
@@ -105,9 +119,6 @@ def canonical_board(board, player):
 
 
 def canonical_action_set(action_set, player, board_size):
-    """
-    Convert valid moves into the canonical perspective.
-    """
     if player == RED:
         return action_set
 
@@ -115,10 +126,6 @@ def canonical_action_set(action_set, player, board_size):
 
 
 def inverse_canonical_move(move, player, board_size):
-    """
-    Convert canonical move back to the real board coordinates.
-    The transformation is symmetric, so we can reuse the same function for BLUE.
-    """
     if player == RED:
         return move
 
@@ -127,19 +134,166 @@ def inverse_canonical_move(move, player, board_size):
 
 def state_to_tensor(state):
     """
-    Convert board state to tensor.
-    Shape:
-        (1, board_size * board_size)
+    Convert board state to tensor depending on the selected architecture.
     """
-    return torch.tensor(state, dtype=torch.float32, device=DEVICE).flatten().unsqueeze(0)
+    if USE_CNN:
+        return board_to_spatial_tensor(state, device=DEVICE)
+
+    return torch.tensor(
+        state,
+        dtype=torch.float32,
+        device=DEVICE
+    ).flatten().unsqueeze(0)
+
+
+def hex_neighbors(row, col, board_size):
+    """
+    Return valid Hex neighbors for one cell.
+    """
+    directions = [
+        (-1, 0),
+        (-1, 1),
+        (0, -1),
+        (0, 1),
+        (1, -1),
+        (1, 0),
+    ]
+
+    for dr, dc in directions:
+        nr, nc = row + dr, col + dc
+
+        if 0 <= nr < board_size and 0 <= nc < board_size:
+            yield nr, nc
+
+
+def cell_cost(value, player):
+    """
+    Cost for shortest-path calculation.
+
+    Own stone: 0
+    Empty cell: 1
+    Opponent stone: very high cost
+    """
+    if value == player:
+        return 0
+
+    if value == EMPTY:
+        return 1
+
+    return 1000
+
+
+def shortest_path_cost(board, player, board_size):
+    """
+    Estimate how many empty cells are needed to connect the player's sides.
+
+    In canonical representation:
+        RED connects top to bottom.
+        BLUE connects left to right.
+    """
+
+    distances = np.full((board_size, board_size), np.inf)
+    pq = []
+
+    if player == RED:
+        # RED connects top to bottom
+        for col in range(board_size):
+            cost = cell_cost(board[0][col], RED)
+            distances[0][col] = cost
+            heapq.heappush(pq, (cost, 0, col))
+
+        def target_reached(row, col):
+            return row == board_size - 1
+
+    else:
+        # BLUE connects left to right
+        for row in range(board_size):
+            cost = cell_cost(board[row][0], BLUE)
+            distances[row][0] = cost
+            heapq.heappush(pq, (cost, row, 0))
+
+        def target_reached(row, col):
+            return col == board_size - 1
+
+    while pq:
+        current_cost, row, col = heapq.heappop(pq)
+
+        if current_cost > distances[row][col]:
+            continue
+
+        if target_reached(row, col):
+            return current_cost
+
+        for nr, nc in hex_neighbors(row, col, board_size):
+            new_cost = current_cost + cell_cost(board[nr][nc], player)
+
+            if new_cost < distances[nr][nc]:
+                distances[nr][nc] = new_cost
+                heapq.heappush(pq, (new_cost, nr, nc))
+
+    return 1000
+
+
+def compute_shaped_reward(state, state_after_agent_move, move, board_size):
+    """
+    Small intermediate reward used only during training.
+
+    Final rewards stay unchanged:
+        win  = +1
+        loss = -1
+
+    Components:
+        1. Center control
+        2. Stone progress
+        3. Path potential
+        4. Blocking reward
+    """
+
+    if not USE_REWARD_SHAPING:
+        return 0.0
+
+    reward = 0.0
+
+    row, col = move
+    center = board_size // 2
+
+    # 1. Center control reward
+    distance_to_center = abs(row - center) + abs(col - center)
+    max_distance = 2 * center if center > 0 else 1
+
+    center_score = 1.0 - (distance_to_center / max_distance)
+    reward += CENTER_REWARD_WEIGHT * center_score
+
+    # 2. Stone progress reward
+    # In canonical representation, the learning agent is always RED.
+    own_stones_before = np.sum(state == RED)
+    own_stones_after = np.sum(state_after_agent_move == RED)
+
+    if own_stones_after > own_stones_before:
+        reward += STONE_PROGRESS_REWARD
+
+    # 3. Path potential reward
+    # Reward if the agent's estimated shortest connection path becomes shorter.
+    own_path_before = shortest_path_cost(state, RED, board_size)
+    own_path_after = shortest_path_cost(state_after_agent_move, RED, board_size)
+
+    if own_path_after < own_path_before:
+        path_improvement = own_path_before - own_path_after
+        reward += PATH_REWARD_WEIGHT * path_improvement
+
+    # 4. Blocking reward
+    # Reward if the opponent's estimated shortest connection path becomes longer.
+    opponent_path_before = shortest_path_cost(state, BLUE, board_size)
+    opponent_path_after = shortest_path_cost(state_after_agent_move, BLUE, board_size)
+
+    if opponent_path_after > opponent_path_before:
+        blocking_improvement = opponent_path_after - opponent_path_before
+        reward += BLOCK_REWARD_WEIGHT * blocking_improvement
+
+    return float(reward)
 
 
 def choose_action(model, state, valid_actions, epsilon):
-    """
-    Epsilon-greedy action selection.
-    The model predicts Q-values for all cells,
-    but we only select from valid actions.
-    """
     board_size = state.shape[0]
 
     if random.random() < epsilon:
@@ -227,15 +381,10 @@ def optimize_model(policy_net, target_net, optimizer, memory):
 
 
 def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, agent_color):
-    """
-    One training episode.
-
-    The DQN agent plays either RED or BLUE.
-    The opponent is random.
-    """
     game = hexPosition(size=BOARD_SIZE)
 
     total_loss = []
+    total_shaped_reward = []
     agent_won = 0
 
     while game.winner == EMPTY:
@@ -266,8 +415,13 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
 
             action_index = move_to_index(canonical_move, BOARD_SIZE)
 
+            # Agent move
             game.move(real_move)
 
+            # Board directly after the agent move
+            state_after_agent_move = canonical_board(game.board, current_player)
+
+            # Terminal case: agent wins
             if game.winner != EMPTY:
                 reward = 1.0 if game.winner == agent_color else -1.0
 
@@ -285,10 +439,21 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
                 agent_won = 1 if game.winner == agent_color else 0
                 break
 
-            # Random opponent move
+            # Reward shaping for the non-terminal agent move
+            shaped_reward = compute_shaped_reward(
+                state=state,
+                state_after_agent_move=state_after_agent_move,
+                move=canonical_move,
+                board_size=BOARD_SIZE
+            )
+
+            total_shaped_reward.append(shaped_reward)
+
+            # Opponent move
             opponent_move = random.choice(game.get_action_space())
             game.move(opponent_move)
 
+            # Terminal case: opponent wins
             if game.winner != EMPTY:
                 reward = -1.0
 
@@ -307,6 +472,7 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
                 break
 
             next_state = canonical_board(game.board, agent_color)
+
             next_real_valid_actions = game.get_action_space()
             next_valid_actions = canonical_action_set(
                 next_real_valid_actions,
@@ -318,7 +484,7 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
                 Transition(
                     state=state,
                     action=action_index,
-                    reward=0.0,
+                    reward=shaped_reward,
                     next_state=next_state,
                     next_valid_actions=next_valid_actions,
                     done=False
@@ -331,13 +497,13 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
                 total_loss.append(loss)
 
         else:
-            # If the random opponent starts first
             opponent_move = random.choice(game.get_action_space())
             game.move(opponent_move)
 
     avg_loss = np.mean(total_loss) if total_loss else 0.0
+    avg_shaped_reward = np.mean(total_shaped_reward) if total_shaped_reward else 0.0
 
-    return agent_won, avg_loss
+    return agent_won, avg_loss, avg_shaped_reward
 
 
 def moving_average(values, window=100):
@@ -353,33 +519,40 @@ def moving_average(values, window=100):
 
 def main():
     set_seed(42)
-
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     print(f"Using device: {DEVICE}")
-    print(f"Training DQN on Hex {BOARD_SIZE}x{BOARD_SIZE}")
+    print(f"Experiment: {EXPERIMENT_NAME}")
+    print(f"Model Architecture: {'CNN' if USE_CNN else 'MLP'}")
+    print(f"Training on Hex {BOARD_SIZE}x{BOARD_SIZE}")
     print(f"Episodes: {EPISODES}")
+    print(f"Reward shaping: {'ON' if USE_REWARD_SHAPING else 'OFF'}")
+    print("Reward shaping components: center + stone progress + path potential + blocking")
+    print(f"Model output: {MODEL_PATH}")
+    print(f"Curve output: {CURVE_PATH}")
 
-    policy_net = DQN(board_size=BOARD_SIZE).to(DEVICE)
-    target_net = DQN(board_size=BOARD_SIZE).to(DEVICE)
+    if USE_CNN:
+        policy_net = ConvDQN(board_size=BOARD_SIZE).to(DEVICE)
+        target_net = ConvDQN(board_size=BOARD_SIZE).to(DEVICE)
+    else:
+        policy_net = DQN(board_size=BOARD_SIZE).to(DEVICE)
+        target_net = DQN(board_size=BOARD_SIZE).to(DEVICE)
 
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
     optimizer = optim.Adam(policy_net.parameters(), lr=LR)
-
     memory = deque(maxlen=MEMORY_SIZE)
-
     epsilon = EPS_START
 
     wins = []
     losses = []
+    shaped_rewards = []
 
     for episode in range(1, EPISODES + 1):
-        # Train sometimes as RED, sometimes as BLUE
         agent_color = RED if episode % 2 == 0 else BLUE
 
-        won, loss = play_training_episode(
+        won, loss, shaped_reward = play_training_episode(
             policy_net=policy_net,
             target_net=target_net,
             optimizer=optimizer,
@@ -390,6 +563,7 @@ def main():
 
         wins.append(won)
         losses.append(loss)
+        shaped_rewards.append(shaped_reward)
 
         epsilon = max(EPS_END, epsilon * EPS_DECAY)
 
@@ -399,34 +573,43 @@ def main():
         if episode % 100 == 0:
             recent_win_rate = np.mean(wins[-100:])
             recent_loss = np.mean(losses[-100:])
+            recent_shaped_reward = np.mean(shaped_rewards[-100:])
 
             print(
                 f"Episode {episode:4d} | "
                 f"Win rate last 100: {recent_win_rate:.3f} | "
                 f"Loss: {recent_loss:.4f} | "
+                f"Shaped reward: {recent_shaped_reward:.4f} | "
                 f"Epsilon: {epsilon:.3f}"
             )
 
-    # Save model
     torch.save(
         {
             "model_state_dict": policy_net.state_dict(),
             "board_size": BOARD_SIZE,
             "episodes": EPISODES,
+            "use_cnn": USE_CNN,
+            "use_reward_shaping": USE_REWARD_SHAPING,
+            "reward_components": [
+                "center_control",
+                "stone_progress",
+                "path_potential",
+                "blocking",
+            ],
+            "experiment_name": EXPERIMENT_NAME,
         },
         MODEL_PATH
     )
 
     print(f"\nModel saved to: {MODEL_PATH}")
 
-    # Save learning curve
     win_rate_curve = moving_average(wins, window=100)
 
     plt.figure(figsize=(8, 5))
     plt.plot(win_rate_curve)
     plt.xlabel("Episode")
     plt.ylabel("Win rate moving average")
-    plt.title("Phase 4 DQN Training Curve")
+    plt.title(f"{EXPERIMENT_NAME} Training Curve")
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(CURVE_PATH)
