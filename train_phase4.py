@@ -1,6 +1,7 @@
 import os
 import random
 import heapq
+import multiprocessing
 from collections import deque, namedtuple
 
 import numpy as np
@@ -11,6 +12,7 @@ import matplotlib.pyplot as plt
 
 from hex_engine import hexPosition, RED, BLUE, EMPTY
 from models import DQN, ConvDQN, board_to_spatial_tensor
+from augmentation import augment_transitions_list
 
 
 # =========================
@@ -32,6 +34,15 @@ EPS_END = 0.05
 EPS_DECAY = 0.995
 
 TARGET_UPDATE_EVERY = 100
+
+# Phase 5B: data augmentation and parallel self-play
+USE_AUGMENTATION = True
+USE_PARALLEL = True
+N_WORKERS = 4
+EPISODES_PER_WORKER = 10
+GRAD_STEPS_PER_ROUND = 20
+MIN_BUFFER = 1000
+TAU = 0.005
 
 # Reward shaping
 USE_REWARD_SHAPING = True
@@ -514,6 +525,105 @@ def moving_average(values, window=100):
 
 
 # =========================
+# Phase 5B: Polyak update + parallel self-play
+# =========================
+
+def polyak_update(policy_net, target_net, tau=TAU):
+    """
+    Soft update of target network parameters.
+    target_param = (1 - tau) * target_param + tau * policy_param
+    """
+    with torch.no_grad():
+        for target_param, policy_param in zip(
+            target_net.parameters(), policy_net.parameters()
+        ):
+            target_param.data.mul_(1.0 - tau)
+            target_param.data.add_(tau * policy_param.data)
+
+
+def worker_run_episodes(args):
+    """
+    Worker process that generates episodes using random self-play.
+
+    Workers play random vs. random games and collect all transitions.
+    Workers run in pure NumPy (no PyTorch) so they are safe under macOS spawn.
+    """
+    import random as _random
+    from hex_engine import hexPosition, RED, BLUE, EMPTY
+
+    n_episodes = args['n_episodes']
+    board_size = args['board_size']
+    seed = args['seed']
+
+    _random.seed(seed)
+    np.random.seed(seed)
+
+    transitions = []
+
+    for _episode in range(n_episodes):
+        game = hexPosition(size=board_size)
+
+        while game.winner == EMPTY:
+            current_player = game.player
+            action_space = game.get_action_space()
+
+            state = np.array(game.board, dtype=np.float32)
+
+            move = _random.choice(action_space)
+            action_index = move[0] * board_size + move[1]
+
+            game.move(move)
+
+            if game.winner != EMPTY:
+                reward = 1.0 if game.winner == current_player else -1.0
+                transitions.append({
+                    'state': state,
+                    'action': action_index,
+                    'reward': reward,
+                    'next_state': None,
+                    'next_valid_actions': None,
+                    'done': True
+                })
+                break
+
+            next_state = np.array(game.board, dtype=np.float32)
+            next_action_space = game.get_action_space()
+
+            transitions.append({
+                'state': state,
+                'action': action_index,
+                'reward': 0.0,
+                'next_state': next_state,
+                'next_valid_actions': next_action_space,
+                'done': False
+            })
+
+    return transitions
+
+
+def collect_parallel_episodes(n_workers, episodes_per_worker, board_size, base_seed, pool):
+    """
+    Dispatch workers and aggregate their transitions into a single list.
+    """
+    args_list = [
+        {
+            'n_episodes': episodes_per_worker,
+            'board_size': board_size,
+            'seed': base_seed + i,
+        }
+        for i in range(n_workers)
+    ]
+
+    results = pool.map(worker_run_episodes, args_list)
+
+    all_transitions = []
+    for worker_transitions in results:
+        all_transitions.extend(worker_transitions)
+
+    return all_transitions
+
+
+# =========================
 # Main training
 # =========================
 
@@ -528,6 +638,7 @@ def main():
     print(f"Episodes: {EPISODES}")
     print(f"Reward shaping: {'ON' if USE_REWARD_SHAPING else 'OFF'}")
     print("Reward shaping components: center + stone progress + path potential + blocking")
+    print(f"Augmentation: {'ON' if USE_AUGMENTATION else 'OFF'} | Parallel: {'ON' if USE_PARALLEL else 'OFF'}")
     print(f"Model output: {MODEL_PATH}")
     print(f"Curve output: {CURVE_PATH}")
 
@@ -548,48 +659,102 @@ def main():
     wins = []
     losses = []
     shaped_rewards = []
+    total_episodes = 0
 
-    for episode in range(1, EPISODES + 1):
-        agent_color = RED if episode % 2 == 0 else BLUE
+    if USE_PARALLEL:
+        # Phase 5B: parallel self-play collection with augmentation and Polyak update.
+        # Workers play random-vs-random in pure NumPy; reward shaping does not apply here.
+        rounds = max(1, EPISODES // (N_WORKERS * EPISODES_PER_WORKER))
 
-        won, loss, shaped_reward = play_training_episode(
-            policy_net=policy_net,
-            target_net=target_net,
-            optimizer=optimizer,
-            memory=memory,
-            epsilon=epsilon,
-            agent_color=agent_color
-        )
+        with multiprocessing.Pool(processes=N_WORKERS, maxtasksperchild=50) as pool:
+            for round_idx in range(1, rounds + 1):
+                transitions = collect_parallel_episodes(
+                    n_workers=N_WORKERS,
+                    episodes_per_worker=EPISODES_PER_WORKER,
+                    board_size=BOARD_SIZE,
+                    base_seed=42 + round_idx,
+                    pool=pool,
+                )
 
-        wins.append(won)
-        losses.append(loss)
-        shaped_rewards.append(shaped_reward)
+                if USE_AUGMENTATION and transitions:
+                    transitions = augment_transitions_list(transitions, BOARD_SIZE)
 
-        epsilon = max(EPS_END, epsilon * EPS_DECAY)
+                for t_dict in transitions:
+                    memory.append(Transition(
+                        state=t_dict['state'],
+                        action=t_dict['action'],
+                        reward=t_dict['reward'],
+                        next_state=t_dict['next_state'],
+                        next_valid_actions=t_dict['next_valid_actions'],
+                        done=t_dict['done'],
+                    ))
 
-        if episode % TARGET_UPDATE_EVERY == 0:
-            target_net.load_state_dict(policy_net.state_dict())
+                if len(memory) >= MIN_BUFFER:
+                    for _ in range(GRAD_STEPS_PER_ROUND):
+                        loss = optimize_model(policy_net, target_net, optimizer, memory)
+                        if loss is not None:
+                            losses.append(loss)
 
-        if episode % 100 == 0:
-            recent_win_rate = np.mean(wins[-100:])
-            recent_loss = np.mean(losses[-100:])
-            recent_shaped_reward = np.mean(shaped_rewards[-100:])
+                    polyak_update(policy_net, target_net, tau=TAU)
 
-            print(
-                f"Episode {episode:4d} | "
-                f"Win rate last 100: {recent_win_rate:.3f} | "
-                f"Loss: {recent_loss:.4f} | "
-                f"Shaped reward: {recent_shaped_reward:.4f} | "
-                f"Epsilon: {epsilon:.3f}"
+                epsilon = max(EPS_END, epsilon * EPS_DECAY)
+                total_episodes += N_WORKERS * EPISODES_PER_WORKER
+
+                if round_idx % 10 == 0:
+                    recent_loss = np.mean(losses[-100:]) if losses else 0.0
+                    print(
+                        f"Round {round_idx:4d} | Episodes: {total_episodes:6d} | "
+                        f"Buffer: {len(memory):6d} | "
+                        f"Loss: {recent_loss:.4f} | "
+                        f"Epsilon: {epsilon:.3f}"
+                    )
+
+    else:
+        # Episode-based loop with reward shaping. Polyak replaces the hard target copy.
+        for episode in range(1, EPISODES + 1):
+            agent_color = RED if episode % 2 == 0 else BLUE
+
+            won, loss, shaped_reward = play_training_episode(
+                policy_net=policy_net,
+                target_net=target_net,
+                optimizer=optimizer,
+                memory=memory,
+                epsilon=epsilon,
+                agent_color=agent_color
             )
+
+            wins.append(won)
+            losses.append(loss)
+            shaped_rewards.append(shaped_reward)
+
+            epsilon = max(EPS_END, epsilon * EPS_DECAY)
+
+            polyak_update(policy_net, target_net, tau=TAU)
+
+            if episode % 100 == 0:
+                recent_win_rate = np.mean(wins[-100:])
+                recent_loss = np.mean(losses[-100:])
+                recent_shaped_reward = np.mean(shaped_rewards[-100:])
+
+                print(
+                    f"Episode {episode:4d} | "
+                    f"Win rate last 100: {recent_win_rate:.3f} | "
+                    f"Loss: {recent_loss:.4f} | "
+                    f"Shaped reward: {recent_shaped_reward:.4f} | "
+                    f"Epsilon: {epsilon:.3f}"
+                )
+
+        total_episodes = EPISODES
 
     torch.save(
         {
             "model_state_dict": policy_net.state_dict(),
             "board_size": BOARD_SIZE,
-            "episodes": EPISODES,
+            "episodes": total_episodes,
             "use_cnn": USE_CNN,
             "use_reward_shaping": USE_REWARD_SHAPING,
+            "use_augmentation": USE_AUGMENTATION,
+            "use_parallel": USE_PARALLEL,
             "reward_components": [
                 "center_control",
                 "stone_progress",
@@ -603,12 +768,19 @@ def main():
 
     print(f"\nModel saved to: {MODEL_PATH}")
 
-    win_rate_curve = moving_average(wins, window=100)
+    if USE_PARALLEL:
+        loss_curve = moving_average(losses, window=100) if losses else losses
+        plt.figure(figsize=(8, 5))
+        plt.plot(loss_curve)
+        plt.xlabel("Training step")
+        plt.ylabel("Loss (moving average)")
+    else:
+        win_rate_curve = moving_average(wins, window=100)
+        plt.figure(figsize=(8, 5))
+        plt.plot(win_rate_curve)
+        plt.xlabel("Episode")
+        plt.ylabel("Win rate moving average")
 
-    plt.figure(figsize=(8, 5))
-    plt.plot(win_rate_curve)
-    plt.xlabel("Episode")
-    plt.ylabel("Win rate moving average")
     plt.title(f"{EXPERIMENT_NAME} Training Curve")
     plt.grid(True)
     plt.tight_layout()
