@@ -5,8 +5,9 @@ import torch
 from hex_engine import RED, BLUE, EMPTY
 from models import DQN, ConvDQN, board_to_tensor, board_to_spatial_tensor
 
-
 _MODEL_CACHE = {}
+
+USE_CNN = True  # <--- SET THIS TO DETERMINE WHICH AGENT IS LOADED IN PYGAME / AUTOGRADER
 
 
 def _get_project_root():
@@ -15,15 +16,8 @@ def _get_project_root():
 
 def _get_model_path():
     project_root = _get_project_root()
-    results_dir = os.path.join(project_root, "results")
-
-    # Try Phase 5B CNN model first, then fall back to MLP
-    cnn_path = os.path.join(results_dir, "phase4_model_cnn_7x7.pt")
-    mlp_path = os.path.join(results_dir, "phase4_model_7x7.pt")
-
-    if os.path.exists(cnn_path):
-        return cnn_path
-    return mlp_path
+    filename = "phase4_model_cnn.pt" if USE_CNN else "phase4_model_7x7.pt"
+    return os.path.join(project_root, "results", filename)
 
 
 def _transform_move_for_blue(move, board_size):
@@ -56,14 +50,12 @@ def _canonical_board(board, player):
 def _canonical_action_set(action_set, player, board_size):
     if player == RED:
         return action_set
-
     return [_transform_move_for_blue(move, board_size) for move in action_set]
 
 
 def _inverse_canonical_move(move, player, board_size):
     if player == RED:
         return move
-
     return _transform_move_for_blue(move, board_size)
 
 
@@ -90,15 +82,12 @@ def _load_model(board_size):
         return None
 
     checkpoint = torch.load(model_path, map_location="cpu")
-
     checkpoint_board_size = checkpoint.get("board_size", board_size)
 
     if checkpoint_board_size != board_size:
         return None
 
-    use_cnn = checkpoint.get("use_cnn", False)
-
-    if use_cnn:
+    if USE_CNN:
         model = ConvDQN(board_size=board_size)
     else:
         model = DQN(board_size=board_size)
@@ -109,9 +98,9 @@ def _load_model(board_size):
         model.load_state_dict(checkpoint)
 
     model.eval()
-    _MODEL_CACHE[board_size] = (model, use_cnn)
+    _MODEL_CACHE[board_size] = model
 
-    return model, use_cnn
+    return model
 
 
 def _infer_current_player(board, action_set):
@@ -146,17 +135,14 @@ def agent(board, action_set):
     Required signature:
         agent(board, action_set) -> move
     """
-
     if not action_set:
         return None
 
     board_size = len(board)
-    result = _load_model(board_size)
+    model = _load_model(board_size)
 
-    if result is None:
+    if model is None:
         return _center_fallback_agent(board, action_set)
-
-    model, use_cnn = result
 
     player = _infer_current_player(board, action_set)
 
@@ -164,10 +150,11 @@ def agent(board, action_set):
     valid_actions = _canonical_action_set(action_set, player, board_size)
 
     with torch.no_grad():
-        if use_cnn:
+        if USE_CNN:
             state_tensor = board_to_spatial_tensor(state, device="cpu")
         else:
             state_tensor = board_to_tensor(state, device="cpu")
+
         q_values = model(state_tensor).squeeze(0)
 
     best_move = None
