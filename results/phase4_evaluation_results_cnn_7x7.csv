@@ -1,3 +1,3 @@
 opponent,games,dqn_wins,dqn_losses,win_rate
-Random Agent,200,90,110,0.45
+Random Agent,200,177,23,0.885
 Center/Greedy Agent,200,200,0,1.0
