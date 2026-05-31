@@ -26,7 +26,7 @@ RESULTS_DIR = "results"
 # =========================
 
 ARCH_NAME = "cnn" if USE_CNN else "mlp"
-SHAPING_NAME = "reward_shaping_path_block" if USE_REWARD_SHAPING else "no_shaping"
+SHAPING_NAME = "reward_shaping_soft_path_block" if USE_REWARD_SHAPING else "no_shaping"
 EXPERIMENT_NAME = f"phase5_{ARCH_NAME}_{SHAPING_NAME}_{BOARD_SIZE}x{BOARD_SIZE}"
 
 MODEL_FILE = f"{EXPERIMENT_NAME}.pt"

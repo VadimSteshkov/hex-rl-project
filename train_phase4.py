@@ -36,8 +36,11 @@ EPS_DECAY = 0.995
 TARGET_UPDATE_EVERY = 100
 
 # Phase 5B: data augmentation and parallel self-play
+# IMPORTANT:
+# Reward shaping is only used in the episode-based training loop.
+# Therefore, for the reward shaping experiment, USE_PARALLEL must be False.
 USE_AUGMENTATION = True
-USE_PARALLEL = True
+USE_PARALLEL = False
 N_WORKERS = 4
 EPISODES_PER_WORKER = 10
 GRAD_STEPS_PER_ROUND = 20
@@ -47,10 +50,16 @@ TAU = 0.005
 # Reward shaping
 USE_REWARD_SHAPING = True
 
-CENTER_REWARD_WEIGHT = 0.03
-STONE_PROGRESS_REWARD = 0.02
-PATH_REWARD_WEIGHT = 0.05
-BLOCK_REWARD_WEIGHT = 0.04
+# Softer reward shaping weights.
+# These values are intentionally small so that the shaped reward guides learning
+# but does not dominate the final win/loss reward.
+CENTER_REWARD_WEIGHT = 0.01
+STONE_PROGRESS_REWARD = 0.005
+PATH_REWARD_WEIGHT = 0.015
+BLOCK_REWARD_WEIGHT = 0.01
+
+# Clip shaped reward to keep intermediate rewards stable.
+SHAPED_REWARD_CLIP = 0.05
 
 RESULTS_DIR = "results"
 
@@ -60,7 +69,7 @@ RESULTS_DIR = "results"
 # =========================
 
 ARCH_NAME = "cnn" if USE_CNN else "mlp"
-SHAPING_NAME = "reward_shaping_path_block" if USE_REWARD_SHAPING else "no_shaping"
+SHAPING_NAME = "reward_shaping_soft_path_block" if USE_REWARD_SHAPING else "no_shaping"
 
 EXPERIMENT_NAME = f"phase5_{ARCH_NAME}_{SHAPING_NAME}_{BOARD_SIZE}x{BOARD_SIZE}"
 
@@ -198,33 +207,37 @@ def shortest_path_cost(board, player, board_size):
     """
     Estimate how many empty cells are needed to connect the player's sides.
 
-    In canonical representation:
-        RED connects top to bottom.
-        BLUE connects left to right.
+    Important:
+    This follows the actual Hex engine rules:
+        RED connects left to right.
+        BLUE connects top to bottom.
+
+    The previous version used the opposite direction, which could reward
+    the model for improving the wrong path.
     """
 
     distances = np.full((board_size, board_size), np.inf)
     pq = []
 
     if player == RED:
-        # RED connects top to bottom
-        for col in range(board_size):
-            cost = cell_cost(board[0][col], RED)
-            distances[0][col] = cost
-            heapq.heappush(pq, (cost, 0, col))
-
-        def target_reached(row, col):
-            return row == board_size - 1
-
-    else:
-        # BLUE connects left to right
+        # RED connects left to right.
         for row in range(board_size):
-            cost = cell_cost(board[row][0], BLUE)
+            cost = cell_cost(board[row][0], RED)
             distances[row][0] = cost
             heapq.heappush(pq, (cost, row, 0))
 
         def target_reached(row, col):
             return col == board_size - 1
+
+    else:
+        # BLUE connects top to bottom.
+        for col in range(board_size):
+            cost = cell_cost(board[0][col], BLUE)
+            distances[0][col] = cost
+            heapq.heappush(pq, (cost, 0, col))
+
+        def target_reached(row, col):
+            return row == board_size - 1
 
     while pq:
         current_cost, row, col = heapq.heappop(pq)
@@ -258,6 +271,8 @@ def compute_shaped_reward(state, state_after_agent_move, move, board_size):
         2. Stone progress
         3. Path potential
         4. Blocking reward
+
+    The reward is clipped so it does not dominate the final win/loss signal.
     """
 
     if not USE_REWARD_SHAPING:
@@ -300,6 +315,9 @@ def compute_shaped_reward(state, state_after_agent_move, move, board_size):
     if opponent_path_after > opponent_path_before:
         blocking_improvement = opponent_path_after - opponent_path_before
         reward += BLOCK_REWARD_WEIGHT * blocking_improvement
+
+    # Keep shaped rewards small and stable.
+    reward = np.clip(reward, -SHAPED_REWARD_CLIP, SHAPED_REWARD_CLIP)
 
     return float(reward)
 
@@ -546,7 +564,10 @@ def worker_run_episodes(args):
     Worker process that generates episodes using random self-play.
 
     Workers play random vs. random games and collect all transitions.
-    Workers run in pure NumPy (no PyTorch) so they are safe under macOS spawn.
+    Workers run in pure NumPy, so they are safe under macOS/Windows spawn.
+
+    Note:
+    Reward shaping is not applied in this parallel branch.
     """
     import random as _random
     from hex_engine import hexPosition, RED, BLUE, EMPTY
@@ -638,9 +659,16 @@ def main():
     print(f"Episodes: {EPISODES}")
     print(f"Reward shaping: {'ON' if USE_REWARD_SHAPING else 'OFF'}")
     print("Reward shaping components: center + stone progress + path potential + blocking")
+    print(f"Shaped reward clip: +/-{SHAPED_REWARD_CLIP}")
     print(f"Augmentation: {'ON' if USE_AUGMENTATION else 'OFF'} | Parallel: {'ON' if USE_PARALLEL else 'OFF'}")
     print(f"Model output: {MODEL_PATH}")
     print(f"Curve output: {CURVE_PATH}")
+
+    if USE_REWARD_SHAPING and USE_PARALLEL:
+        print(
+            "WARNING: USE_PARALLEL=True means reward shaping is not applied. "
+            "Set USE_PARALLEL=False for reward shaping experiments."
+        )
 
     if USE_CNN:
         policy_net = ConvDQN(board_size=BOARD_SIZE).to(DEVICE)
@@ -710,7 +738,7 @@ def main():
                     )
 
     else:
-        # Episode-based loop with reward shaping. Polyak replaces the hard target copy.
+        # Episode-based loop with reward shaping.
         for episode in range(1, EPISODES + 1):
             agent_color = RED if episode % 2 == 0 else BLUE
 
@@ -761,6 +789,13 @@ def main():
                 "path_potential",
                 "blocking",
             ],
+            "reward_weights": {
+                "center": CENTER_REWARD_WEIGHT,
+                "stone_progress": STONE_PROGRESS_REWARD,
+                "path": PATH_REWARD_WEIGHT,
+                "blocking": BLOCK_REWARD_WEIGHT,
+                "clip": SHAPED_REWARD_CLIP,
+            },
             "experiment_name": EXPERIMENT_NAME,
         },
         MODEL_PATH
