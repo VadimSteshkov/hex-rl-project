@@ -1,5 +1,6 @@
 import os
 import random
+import csv
 import heapq
 import multiprocessing
 from collections import deque, namedtuple
@@ -33,8 +34,6 @@ EPS_START = 1.0
 EPS_END = 0.05
 EPS_DECAY = 0.995
 
-TARGET_UPDATE_EVERY = 100
-
 # Phase 5B: data augmentation and parallel self-play
 # IMPORTANT:
 # Reward shaping is only used in the episode-based training loop.
@@ -51,8 +50,6 @@ TAU = 0.005
 USE_REWARD_SHAPING = True
 
 # Softer reward shaping weights.
-# These values are intentionally small so that the shaped reward guides learning
-# but does not dominate the final win/loss reward.
 CENTER_REWARD_WEIGHT = 0.01
 STONE_PROGRESS_REWARD = 0.005
 PATH_REWARD_WEIGHT = 0.015
@@ -62,6 +59,14 @@ BLOCK_REWARD_WEIGHT = 0.01
 SHAPED_REWARD_CLIP = 0.05
 
 RESULTS_DIR = "results"
+
+# Phase 5E: training stability and monitoring
+LOG_INTERVAL = 100
+LR_SCHEDULER_STEP_SIZE = 1000
+LR_SCHEDULER_GAMMA = 0.8
+
+SAVE_BEST_MODEL = True
+BEST_MODEL_MIN_EPISODES = 500
 
 
 # =========================
@@ -75,9 +80,13 @@ EXPERIMENT_NAME = f"phase5_{ARCH_NAME}_{SHAPING_NAME}_{BOARD_SIZE}x{BOARD_SIZE}"
 
 MODEL_FILE = f"{EXPERIMENT_NAME}.pt"
 CURVE_FILE = f"{EXPERIMENT_NAME}_learning_curve.png"
+LOG_FILE = f"{EXPERIMENT_NAME}_training_log.csv"
+BEST_MODEL_FILE = f"{EXPERIMENT_NAME}_best.pt"
 
 MODEL_PATH = os.path.join(RESULTS_DIR, MODEL_FILE)
 CURVE_PATH = os.path.join(RESULTS_DIR, CURVE_FILE)
+LOG_PATH = os.path.join(RESULTS_DIR, LOG_FILE)
+BEST_MODEL_PATH = os.path.join(RESULTS_DIR, BEST_MODEL_FILE)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -153,9 +162,6 @@ def inverse_canonical_move(move, player, board_size):
 
 
 def state_to_tensor(state):
-    """
-    Convert board state to tensor depending on the selected architecture.
-    """
     if USE_CNN:
         return board_to_spatial_tensor(state, device=DEVICE)
 
@@ -167,9 +173,6 @@ def state_to_tensor(state):
 
 
 def hex_neighbors(row, col, board_size):
-    """
-    Return valid Hex neighbors for one cell.
-    """
     directions = [
         (-1, 0),
         (-1, 1),
@@ -187,13 +190,6 @@ def hex_neighbors(row, col, board_size):
 
 
 def cell_cost(value, player):
-    """
-    Cost for shortest-path calculation.
-
-    Own stone: 0
-    Empty cell: 1
-    Opponent stone: very high cost
-    """
     if value == player:
         return 0
 
@@ -207,20 +203,14 @@ def shortest_path_cost(board, player, board_size):
     """
     Estimate how many empty cells are needed to connect the player's sides.
 
-    Important:
-    This follows the actual Hex engine rules:
-        RED connects left to right.
-        BLUE connects top to bottom.
-
-    The previous version used the opposite direction, which could reward
-    the model for improving the wrong path.
+    RED connects left to right.
+    BLUE connects top to bottom.
     """
 
     distances = np.full((board_size, board_size), np.inf)
     pq = []
 
     if player == RED:
-        # RED connects left to right.
         for row in range(board_size):
             cost = cell_cost(board[row][0], RED)
             distances[row][0] = cost
@@ -230,7 +220,6 @@ def shortest_path_cost(board, player, board_size):
             return col == board_size - 1
 
     else:
-        # BLUE connects top to bottom.
         for col in range(board_size):
             cost = cell_cost(board[0][col], BLUE)
             distances[0][col] = cost
@@ -265,14 +254,6 @@ def compute_shaped_reward(state, state_after_agent_move, move, board_size):
     Final rewards stay unchanged:
         win  = +1
         loss = -1
-
-    Components:
-        1. Center control
-        2. Stone progress
-        3. Path potential
-        4. Blocking reward
-
-    The reward is clipped so it does not dominate the final win/loss signal.
     """
 
     if not USE_REWARD_SHAPING:
@@ -286,12 +267,10 @@ def compute_shaped_reward(state, state_after_agent_move, move, board_size):
     # 1. Center control reward
     distance_to_center = abs(row - center) + abs(col - center)
     max_distance = 2 * center if center > 0 else 1
-
     center_score = 1.0 - (distance_to_center / max_distance)
     reward += CENTER_REWARD_WEIGHT * center_score
 
     # 2. Stone progress reward
-    # In canonical representation, the learning agent is always RED.
     own_stones_before = np.sum(state == RED)
     own_stones_after = np.sum(state_after_agent_move == RED)
 
@@ -299,7 +278,6 @@ def compute_shaped_reward(state, state_after_agent_move, move, board_size):
         reward += STONE_PROGRESS_REWARD
 
     # 3. Path potential reward
-    # Reward if the agent's estimated shortest connection path becomes shorter.
     own_path_before = shortest_path_cost(state, RED, board_size)
     own_path_after = shortest_path_cost(state_after_agent_move, RED, board_size)
 
@@ -308,7 +286,6 @@ def compute_shaped_reward(state, state_after_agent_move, move, board_size):
         reward += PATH_REWARD_WEIGHT * path_improvement
 
     # 4. Blocking reward
-    # Reward if the opponent's estimated shortest connection path becomes longer.
     opponent_path_before = shortest_path_cost(state, BLUE, board_size)
     opponent_path_after = shortest_path_cost(state_after_agent_move, BLUE, board_size)
 
@@ -316,7 +293,6 @@ def compute_shaped_reward(state, state_after_agent_move, move, board_size):
         blocking_improvement = opponent_path_after - opponent_path_before
         reward += BLOCK_REWARD_WEIGHT * blocking_improvement
 
-    # Keep shaped rewards small and stable.
     reward = np.clip(reward, -SHAPED_REWARD_CLIP, SHAPED_REWARD_CLIP)
 
     return float(reward)
@@ -414,6 +390,7 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
 
     total_loss = []
     total_shaped_reward = []
+    optimizer_steps = 0
     agent_won = 0
 
     while game.winner == EMPTY:
@@ -444,13 +421,10 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
 
             action_index = move_to_index(canonical_move, BOARD_SIZE)
 
-            # Agent move
             game.move(real_move)
 
-            # Board directly after the agent move
             state_after_agent_move = canonical_board(game.board, current_player)
 
-            # Terminal case: agent wins
             if game.winner != EMPTY:
                 reward = 1.0 if game.winner == agent_color else -1.0
 
@@ -468,7 +442,6 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
                 agent_won = 1 if game.winner == agent_color else 0
                 break
 
-            # Reward shaping for the non-terminal agent move
             shaped_reward = compute_shaped_reward(
                 state=state,
                 state_after_agent_move=state_after_agent_move,
@@ -478,11 +451,9 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
 
             total_shaped_reward.append(shaped_reward)
 
-            # Opponent move
             opponent_move = random.choice(game.get_action_space())
             game.move(opponent_move)
 
-            # Terminal case: opponent wins
             if game.winner != EMPTY:
                 reward = -1.0
 
@@ -524,6 +495,7 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
 
             if loss is not None:
                 total_loss.append(loss)
+                optimizer_steps += 1
 
         else:
             opponent_move = random.choice(game.get_action_space())
@@ -532,7 +504,7 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
     avg_loss = np.mean(total_loss) if total_loss else 0.0
     avg_shaped_reward = np.mean(total_shaped_reward) if total_shaped_reward else 0.0
 
-    return agent_won, avg_loss, avg_shaped_reward
+    return agent_won, avg_loss, avg_shaped_reward, optimizer_steps
 
 
 def moving_average(values, window=100):
@@ -543,14 +515,105 @@ def moving_average(values, window=100):
 
 
 # =========================
+# Phase 5E helpers
+# =========================
+
+def build_checkpoint(policy_net, total_episodes):
+    return {
+        "model_state_dict": policy_net.state_dict(),
+        "board_size": BOARD_SIZE,
+        "episodes": total_episodes,
+        "use_cnn": USE_CNN,
+        "use_reward_shaping": USE_REWARD_SHAPING,
+        "use_augmentation": USE_AUGMENTATION,
+        "use_parallel": USE_PARALLEL,
+        "reward_components": [
+            "center_control",
+            "stone_progress",
+            "path_potential",
+            "blocking",
+        ],
+        "reward_weights": {
+            "center": CENTER_REWARD_WEIGHT,
+            "stone_progress": STONE_PROGRESS_REWARD,
+            "path": PATH_REWARD_WEIGHT,
+            "blocking": BLOCK_REWARD_WEIGHT,
+            "clip": SHAPED_REWARD_CLIP,
+        },
+        "experiment_name": EXPERIMENT_NAME,
+    }
+
+
+def initialize_training_log(log_path):
+    with open(log_path, mode="w", newline="") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=[
+                "phase",
+                "episode",
+                "round",
+                "win_rate_last_100",
+                "loss_last_100",
+                "shaped_reward_last_100",
+                "epsilon",
+                "learning_rate",
+                "buffer_size",
+                "best_win_rate",
+            ],
+        )
+        writer.writeheader()
+
+
+def append_training_log(
+    log_path,
+    phase,
+    episode,
+    round_idx,
+    win_rate_last_100,
+    loss_last_100,
+    shaped_reward_last_100,
+    epsilon,
+    learning_rate,
+    buffer_size,
+    best_win_rate,
+):
+    with open(log_path, mode="a", newline="") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=[
+                "phase",
+                "episode",
+                "round",
+                "win_rate_last_100",
+                "loss_last_100",
+                "shaped_reward_last_100",
+                "epsilon",
+                "learning_rate",
+                "buffer_size",
+                "best_win_rate",
+            ],
+        )
+        writer.writerow(
+            {
+                "phase": phase,
+                "episode": episode,
+                "round": round_idx,
+                "win_rate_last_100": win_rate_last_100,
+                "loss_last_100": loss_last_100,
+                "shaped_reward_last_100": shaped_reward_last_100,
+                "epsilon": epsilon,
+                "learning_rate": learning_rate,
+                "buffer_size": buffer_size,
+                "best_win_rate": best_win_rate,
+            }
+        )
+
+
+# =========================
 # Phase 5B: Polyak update + parallel self-play
 # =========================
 
 def polyak_update(policy_net, target_net, tau=TAU):
-    """
-    Soft update of target network parameters.
-    target_param = (1 - tau) * target_param + tau * policy_param
-    """
     with torch.no_grad():
         for target_param, policy_param in zip(
             target_net.parameters(), policy_net.parameters()
@@ -560,21 +623,12 @@ def polyak_update(policy_net, target_net, tau=TAU):
 
 
 def worker_run_episodes(args):
-    """
-    Worker process that generates episodes using random self-play.
-
-    Workers play random vs. random games and collect all transitions.
-    Workers run in pure NumPy, so they are safe under macOS/Windows spawn.
-
-    Note:
-    Reward shaping is not applied in this parallel branch.
-    """
     import random as _random
-    from hex_engine import hexPosition, RED, BLUE, EMPTY
+    from hex_engine import hexPosition, EMPTY
 
-    n_episodes = args['n_episodes']
-    board_size = args['board_size']
-    seed = args['seed']
+    n_episodes = args["n_episodes"]
+    board_size = args["board_size"]
+    seed = args["seed"]
 
     _random.seed(seed)
     np.random.seed(seed)
@@ -598,12 +652,12 @@ def worker_run_episodes(args):
             if game.winner != EMPTY:
                 reward = 1.0 if game.winner == current_player else -1.0
                 transitions.append({
-                    'state': state,
-                    'action': action_index,
-                    'reward': reward,
-                    'next_state': None,
-                    'next_valid_actions': None,
-                    'done': True
+                    "state": state,
+                    "action": action_index,
+                    "reward": reward,
+                    "next_state": None,
+                    "next_valid_actions": None,
+                    "done": True,
                 })
                 break
 
@@ -611,26 +665,23 @@ def worker_run_episodes(args):
             next_action_space = game.get_action_space()
 
             transitions.append({
-                'state': state,
-                'action': action_index,
-                'reward': 0.0,
-                'next_state': next_state,
-                'next_valid_actions': next_action_space,
-                'done': False
+                "state": state,
+                "action": action_index,
+                "reward": 0.0,
+                "next_state": next_state,
+                "next_valid_actions": next_action_space,
+                "done": False,
             })
 
     return transitions
 
 
 def collect_parallel_episodes(n_workers, episodes_per_worker, board_size, base_seed, pool):
-    """
-    Dispatch workers and aggregate their transitions into a single list.
-    """
     args_list = [
         {
-            'n_episodes': episodes_per_worker,
-            'board_size': board_size,
-            'seed': base_seed + i,
+            "n_episodes": episodes_per_worker,
+            "board_size": board_size,
+            "seed": base_seed + i,
         }
         for i in range(n_workers)
     ]
@@ -662,7 +713,9 @@ def main():
     print(f"Shaped reward clip: +/-{SHAPED_REWARD_CLIP}")
     print(f"Augmentation: {'ON' if USE_AUGMENTATION else 'OFF'} | Parallel: {'ON' if USE_PARALLEL else 'OFF'}")
     print(f"Model output: {MODEL_PATH}")
+    print(f"Best model output: {BEST_MODEL_PATH}")
     print(f"Curve output: {CURVE_PATH}")
+    print(f"Training log output: {LOG_PATH}")
 
     if USE_REWARD_SHAPING and USE_PARALLEL:
         print(
@@ -681,17 +734,26 @@ def main():
     target_net.eval()
 
     optimizer = optim.Adam(policy_net.parameters(), lr=LR)
+
+    scheduler = optim.lr_scheduler.StepLR(
+        optimizer,
+        step_size=LR_SCHEDULER_STEP_SIZE,
+        gamma=LR_SCHEDULER_GAMMA,
+    )
+
     memory = deque(maxlen=MEMORY_SIZE)
     epsilon = EPS_START
+    best_win_rate = -float("inf")
+
+    initialize_training_log(LOG_PATH)
 
     wins = []
     losses = []
     shaped_rewards = []
     total_episodes = 0
+    total_optimizer_steps = 0
 
     if USE_PARALLEL:
-        # Phase 5B: parallel self-play collection with augmentation and Polyak update.
-        # Workers play random-vs-random in pure NumPy; reward shaping does not apply here.
         rounds = max(1, EPISODES // (N_WORKERS * EPISODES_PER_WORKER))
 
         with multiprocessing.Pool(processes=N_WORKERS, maxtasksperchild=50) as pool:
@@ -709,40 +771,66 @@ def main():
 
                 for t_dict in transitions:
                     memory.append(Transition(
-                        state=t_dict['state'],
-                        action=t_dict['action'],
-                        reward=t_dict['reward'],
-                        next_state=t_dict['next_state'],
-                        next_valid_actions=t_dict['next_valid_actions'],
-                        done=t_dict['done'],
+                        state=t_dict["state"],
+                        action=t_dict["action"],
+                        reward=t_dict["reward"],
+                        next_state=t_dict["next_state"],
+                        next_valid_actions=t_dict["next_valid_actions"],
+                        done=t_dict["done"],
                     ))
+
+                optimizer_steps_this_round = 0
 
                 if len(memory) >= MIN_BUFFER:
                     for _ in range(GRAD_STEPS_PER_ROUND):
                         loss = optimize_model(policy_net, target_net, optimizer, memory)
+
                         if loss is not None:
                             losses.append(loss)
+                            optimizer_steps_this_round += 1
+                            total_optimizer_steps += 1
 
                     polyak_update(policy_net, target_net, tau=TAU)
 
                 epsilon = max(EPS_END, epsilon * EPS_DECAY)
+
+                if optimizer_steps_this_round > 0:
+                    scheduler.step()
+
                 total_episodes += N_WORKERS * EPISODES_PER_WORKER
 
                 if round_idx % 10 == 0:
                     recent_loss = np.mean(losses[-100:]) if losses else 0.0
+                    current_lr = optimizer.param_groups[0]["lr"]
+
                     print(
                         f"Round {round_idx:4d} | Episodes: {total_episodes:6d} | "
                         f"Buffer: {len(memory):6d} | "
                         f"Loss: {recent_loss:.4f} | "
-                        f"Epsilon: {epsilon:.3f}"
+                        f"Epsilon: {epsilon:.3f} | "
+                        f"LR: {current_lr:.6f} | "
+                        f"Optimizer steps: {total_optimizer_steps}"
+                    )
+
+                    append_training_log(
+                        log_path=LOG_PATH,
+                        phase="parallel",
+                        episode=total_episodes,
+                        round_idx=round_idx,
+                        win_rate_last_100="",
+                        loss_last_100=recent_loss,
+                        shaped_reward_last_100="",
+                        epsilon=epsilon,
+                        learning_rate=current_lr,
+                        buffer_size=len(memory),
+                        best_win_rate="",
                     )
 
     else:
-        # Episode-based loop with reward shaping.
         for episode in range(1, EPISODES + 1):
             agent_color = RED if episode % 2 == 0 else BLUE
 
-            won, loss, shaped_reward = play_training_episode(
+            won, loss, shaped_reward, optimizer_steps = play_training_episode(
                 policy_net=policy_net,
                 target_net=target_net,
                 optimizer=optimizer,
@@ -754,50 +842,66 @@ def main():
             wins.append(won)
             losses.append(loss)
             shaped_rewards.append(shaped_reward)
+            total_optimizer_steps += optimizer_steps
 
             epsilon = max(EPS_END, epsilon * EPS_DECAY)
 
+            if optimizer_steps > 0:
+                scheduler.step()
+
             polyak_update(policy_net, target_net, tau=TAU)
 
-            if episode % 100 == 0:
+            if episode % LOG_INTERVAL == 0:
                 recent_win_rate = np.mean(wins[-100:])
                 recent_loss = np.mean(losses[-100:])
                 recent_shaped_reward = np.mean(shaped_rewards[-100:])
+                current_lr = optimizer.param_groups[0]["lr"]
+
+                if (
+                    SAVE_BEST_MODEL
+                    and episode >= BEST_MODEL_MIN_EPISODES
+                    and recent_win_rate > best_win_rate
+                ):
+                    best_win_rate = recent_win_rate
+
+                    torch.save(
+                        build_checkpoint(policy_net, total_episodes=episode),
+                        BEST_MODEL_PATH,
+                    )
+
+                    print(
+                        f"New best checkpoint saved: {BEST_MODEL_PATH} "
+                        f"(win rate last 100 = {best_win_rate:.3f})"
+                    )
 
                 print(
                     f"Episode {episode:4d} | "
                     f"Win rate last 100: {recent_win_rate:.3f} | "
                     f"Loss: {recent_loss:.4f} | "
                     f"Shaped reward: {recent_shaped_reward:.4f} | "
-                    f"Epsilon: {epsilon:.3f}"
+                    f"Epsilon: {epsilon:.3f} | "
+                    f"LR: {current_lr:.6f} | "
+                    f"Optimizer steps: {total_optimizer_steps}"
+                )
+
+                append_training_log(
+                    log_path=LOG_PATH,
+                    phase="episode",
+                    episode=episode,
+                    round_idx="",
+                    win_rate_last_100=recent_win_rate,
+                    loss_last_100=recent_loss,
+                    shaped_reward_last_100=recent_shaped_reward,
+                    epsilon=epsilon,
+                    learning_rate=current_lr,
+                    buffer_size=len(memory),
+                    best_win_rate=best_win_rate if best_win_rate > -float("inf") else "",
                 )
 
         total_episodes = EPISODES
 
     torch.save(
-        {
-            "model_state_dict": policy_net.state_dict(),
-            "board_size": BOARD_SIZE,
-            "episodes": total_episodes,
-            "use_cnn": USE_CNN,
-            "use_reward_shaping": USE_REWARD_SHAPING,
-            "use_augmentation": USE_AUGMENTATION,
-            "use_parallel": USE_PARALLEL,
-            "reward_components": [
-                "center_control",
-                "stone_progress",
-                "path_potential",
-                "blocking",
-            ],
-            "reward_weights": {
-                "center": CENTER_REWARD_WEIGHT,
-                "stone_progress": STONE_PROGRESS_REWARD,
-                "path": PATH_REWARD_WEIGHT,
-                "blocking": BLOCK_REWARD_WEIGHT,
-                "clip": SHAPED_REWARD_CLIP,
-            },
-            "experiment_name": EXPERIMENT_NAME,
-        },
+        build_checkpoint(policy_net, total_episodes=total_episodes),
         MODEL_PATH
     )
 
@@ -805,12 +909,14 @@ def main():
 
     if USE_PARALLEL:
         loss_curve = moving_average(losses, window=100) if losses else losses
+
         plt.figure(figsize=(8, 5))
         plt.plot(loss_curve)
         plt.xlabel("Training step")
-        plt.ylabel("Loss (moving average)")
+        plt.ylabel("Loss moving average")
     else:
         win_rate_curve = moving_average(wins, window=100)
+
         plt.figure(figsize=(8, 5))
         plt.plot(win_rate_curve)
         plt.xlabel("Episode")

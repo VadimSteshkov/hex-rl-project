@@ -21,6 +21,12 @@ USE_REWARD_SHAPING = True
 
 RESULTS_DIR = "results"
 
+# Phase 5E:
+# False = evaluate final checkpoint
+# True  = evaluate best checkpoint saved during training
+LOAD_BEST_MODEL = False
+
+
 # =========================
 # Experiment naming
 # =========================
@@ -30,9 +36,16 @@ SHAPING_NAME = "reward_shaping_soft_path_block" if USE_REWARD_SHAPING else "no_s
 EXPERIMENT_NAME = f"phase5_{ARCH_NAME}_{SHAPING_NAME}_{BOARD_SIZE}x{BOARD_SIZE}"
 
 MODEL_FILE = f"{EXPERIMENT_NAME}.pt"
-CSV_FILE = f"{EXPERIMENT_NAME}_evaluation_results.csv"
+BEST_MODEL_FILE = f"{EXPERIMENT_NAME}_best.pt"
 
-MODEL_PATH = os.path.join(RESULTS_DIR, MODEL_FILE)
+EVALUATION_SUFFIX = "best" if LOAD_BEST_MODEL else "final"
+CSV_FILE = f"{EXPERIMENT_NAME}_{EVALUATION_SUFFIX}_evaluation_results.csv"
+
+MODEL_PATH = os.path.join(
+    RESULTS_DIR,
+    BEST_MODEL_FILE if LOAD_BEST_MODEL else MODEL_FILE,
+)
+
 CSV_PATH = os.path.join(RESULTS_DIR, CSV_FILE)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -158,9 +171,19 @@ def play_game(dqn_color, opponent_agent, model):
 
 def evaluate_against(opponent_name, opponent_agent, model):
     dqn_wins = 0
+    dqn_red_wins = 0
+    dqn_blue_wins = 0
+
+    red_games = 0
+    blue_games = 0
 
     for game_id in range(N_GAMES):
         dqn_color = RED if game_id % 2 == 0 else BLUE
+
+        if dqn_color == RED:
+            red_games += 1
+        else:
+            blue_games += 1
 
         winner = play_game(
             dqn_color=dqn_color,
@@ -171,14 +194,27 @@ def evaluate_against(opponent_name, opponent_agent, model):
         if winner == dqn_color:
             dqn_wins += 1
 
+            if dqn_color == RED:
+                dqn_red_wins += 1
+            else:
+                dqn_blue_wins += 1
+
     win_rate = dqn_wins / N_GAMES
+    red_win_rate = dqn_red_wins / red_games if red_games else 0.0
+    blue_win_rate = dqn_blue_wins / blue_games if blue_games else 0.0
 
     return {
         "opponent": opponent_name,
         "games": N_GAMES,
         "dqn_wins": dqn_wins,
         "dqn_losses": N_GAMES - dqn_wins,
-        "win_rate": win_rate
+        "win_rate": win_rate,
+        "red_games": red_games,
+        "dqn_red_wins": dqn_red_wins,
+        "red_win_rate": red_win_rate,
+        "blue_games": blue_games,
+        "dqn_blue_wins": dqn_blue_wins,
+        "blue_win_rate": blue_win_rate,
     }
 
 
@@ -199,10 +235,12 @@ def main():
     print(f"Experiment: {EXPERIMENT_NAME}")
     print(f"Evaluating Model: {'ConvDQN' if USE_CNN else 'DQN'}")
     print(f"Reward shaping during training: {'ON' if USE_REWARD_SHAPING else 'OFF'}")
+    print(f"Checkpoint type: {'best' if LOAD_BEST_MODEL else 'final'}")
     print(f"Loading model from: {MODEL_PATH}")
     print(f"CSV output: {CSV_PATH}")
 
     model = load_model()
+
     results = []
 
     results.append(
@@ -228,14 +266,31 @@ def main():
         print(
             f"{'ConvDQN' if USE_CNN else 'DQN'} vs {result['opponent']}: "
             f"{result['dqn_wins']} / {result['games']} wins "
-            f"= {result['win_rate']:.3f}"
+            f"= {result['win_rate']:.3f} | "
+            f"RED: {result['dqn_red_wins']} / {result['red_games']} "
+            f"= {result['red_win_rate']:.3f} | "
+            f"BLUE: {result['dqn_blue_wins']} / {result['blue_games']} "
+            f"= {result['blue_win_rate']:.3f}"
         )
 
     with open(CSV_PATH, mode="w", newline="") as file:
         writer = csv.DictWriter(
             file,
-            fieldnames=["opponent", "games", "dqn_wins", "dqn_losses", "win_rate"]
+            fieldnames=[
+                "opponent",
+                "games",
+                "dqn_wins",
+                "dqn_losses",
+                "win_rate",
+                "red_games",
+                "dqn_red_wins",
+                "red_win_rate",
+                "blue_games",
+                "dqn_blue_wins",
+                "blue_win_rate",
+            ]
         )
+
         writer.writeheader()
         writer.writerows(results)
 
