@@ -1,0 +1,27 @@
+test_type,param_name,param_value,opponent,games,dqn_wins,win_rate,red_win_rate,blue_win_rate
+input_noise,input_sigma,0.0,Random Agent,100,99,0.99,1.0,0.98
+input_noise,input_sigma,0.0,Center/Greedy Agent,100,50,0.5,1.0,0.0
+input_noise,input_sigma,0.05,Random Agent,100,98,0.98,0.96,1.0
+input_noise,input_sigma,0.05,Center/Greedy Agent,100,23,0.23,0.46,0.0
+input_noise,input_sigma,0.1,Random Agent,100,99,0.99,0.98,1.0
+input_noise,input_sigma,0.1,Center/Greedy Agent,100,26,0.26,0.44,0.08
+input_noise,input_sigma,0.2,Random Agent,100,91,0.91,0.9,0.92
+input_noise,input_sigma,0.2,Center/Greedy Agent,100,22,0.22,0.4,0.04
+input_noise,input_sigma,0.5,Random Agent,100,60,0.6,0.7,0.5
+input_noise,input_sigma,0.5,Center/Greedy Agent,100,12,0.12,0.1,0.14
+q_noise,q_sigma,0.0,Random Agent,100,98,0.98,1.0,0.96
+q_noise,q_sigma,0.0,Center/Greedy Agent,100,50,0.5,1.0,0.0
+q_noise,q_sigma,0.05,Random Agent,100,86,0.86,0.88,0.84
+q_noise,q_sigma,0.05,Center/Greedy Agent,100,12,0.12,0.1,0.14
+q_noise,q_sigma,0.1,Random Agent,100,69,0.69,0.68,0.7
+q_noise,q_sigma,0.1,Center/Greedy Agent,100,20,0.2,0.32,0.08
+q_noise,q_sigma,0.2,Random Agent,100,72,0.72,0.78,0.66
+q_noise,q_sigma,0.2,Center/Greedy Agent,100,30,0.3,0.38,0.22
+q_noise,q_sigma,0.5,Random Agent,100,55,0.55,0.64,0.46
+q_noise,q_sigma,0.5,Center/Greedy Agent,100,35,0.35,0.44,0.26
+opponent_suboptimality,opponent_epsilon,0.0,Center/Greedy (epsilon-random),100,50,0.5,1.0,0.0
+opponent_suboptimality,opponent_epsilon,0.1,Center/Greedy (epsilon-random),100,47,0.47,0.92,0.02
+opponent_suboptimality,opponent_epsilon,0.25,Center/Greedy (epsilon-random),100,54,0.54,0.92,0.16
+opponent_suboptimality,opponent_epsilon,0.5,Center/Greedy (epsilon-random),100,76,0.76,0.96,0.56
+opponent_suboptimality,opponent_epsilon,0.75,Center/Greedy (epsilon-random),100,83,0.83,0.94,0.72
+opponent_suboptimality,opponent_epsilon,1.0,Center/Greedy (epsilon-random),100,98,0.98,0.96,1.0
