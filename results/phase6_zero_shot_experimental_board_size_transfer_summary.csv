@@ -1,0 +1,6 @@
+experiment,board_size,start_stones,opponent,experimental_board_transfer,games,dqn_wins,dqn_losses,win_rate,red_games,dqn_red_wins,red_win_rate,blue_games,dqn_blue_wins,blue_win_rate,avg_game_length,std_game_length,invalid_fallbacks
+experimental_board_size_transfer,5,0,Random Agent,True,200,190,10,0.95,100,96,0.96,100,94,0.94,11.16,3.358690819367049,0
+experimental_board_size_transfer,6,0,Random Agent,True,200,193,7,0.965,100,99,0.99,100,94,0.94,13.835,5.158568517110988,0
+experimental_board_size_transfer,7,0,Random Agent,True,200,197,3,0.985,100,99,0.99,100,98,0.98,15.925,5.34436019834444,0
+experimental_board_size_transfer,8,0,Random Agent,True,200,90,110,0.45,100,43,0.43,100,47,0.47,60.6,3.7936736547830483,0
+experimental_board_size_transfer,9,0,Random Agent,True,200,98,102,0.49,100,48,0.48,100,50,0.5,75.01,4.71391610289424,0

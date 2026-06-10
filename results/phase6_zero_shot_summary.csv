@@ -1,0 +1,15 @@
+experiment,board_size,start_stones,opponent,experimental_board_transfer,games,dqn_wins,dqn_losses,win_rate,red_games,dqn_red_wins,red_win_rate,blue_games,dqn_blue_wins,blue_win_rate,avg_game_length,std_game_length,invalid_fallbacks
+experimental_board_size_transfer,5,0,Random Agent,True,200,190,10,0.95,100,96,0.96,100,94,0.94,11.16,3.358690819367049,0
+experimental_board_size_transfer,6,0,Random Agent,True,200,193,7,0.965,100,99,0.99,100,94,0.94,13.835,5.158568517110988,0
+experimental_board_size_transfer,7,0,Random Agent,True,200,197,3,0.985,100,99,0.99,100,98,0.98,15.925,5.34436019834444,0
+experimental_board_size_transfer,8,0,Random Agent,True,200,90,110,0.45,100,43,0.43,100,47,0.47,60.6,3.7936736547830483,0
+experimental_board_size_transfer,9,0,Random Agent,True,200,98,102,0.49,100,48,0.48,100,50,0.5,75.01,4.71391610289424,0
+unseen_starting_positions,7,0,Random Agent,False,200,195,5,0.975,100,99,0.99,100,96,0.96,16.175,5.8010893969111335,0
+unseen_starting_positions,7,2,Random Agent,False,200,194,6,0.97,100,97,0.97,100,97,0.97,19.43,6.750030709031206,0
+unseen_starting_positions,7,4,Random Agent,False,200,192,8,0.96,100,97,0.97,100,95,0.95,22.18,7.905064848010814,0
+unseen_starting_positions,7,6,Random Agent,False,200,180,20,0.9,100,93,0.93,100,87,0.87,25.44,8.614373870800458,0
+unseen_starting_positions,7,8,Random Agent,False,200,185,15,0.925,100,95,0.95,100,90,0.9,26.505,7.923628870180745,0
+random_seed_opponent_variations,7,0,Random Agent seed 123,False,200,196,4,0.98,100,97,0.97,100,99,0.99,16.45,6.364750604010835,0
+random_seed_opponent_variations,7,0,Random Agent seed 2026,False,200,197,3,0.985,100,99,0.99,100,98,0.98,15.985,5.5821660571365355,0
+random_seed_opponent_variations,7,0,Random Agent seed 42,False,200,200,0,1.0,100,100,1.0,100,100,1.0,15.87,5.4930838196086365,0
+random_seed_opponent_variations,7,0,Random Agent seed 9001,False,200,195,5,0.975,100,98,0.98,100,97,0.97,16.555,6.29724155930844,0
