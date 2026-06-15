@@ -1,15 +1,25 @@
 experiment,board_size,start_stones,opponent,experimental_board_transfer,games,dqn_wins,dqn_losses,win_rate,red_games,dqn_red_wins,red_win_rate,blue_games,dqn_blue_wins,blue_win_rate,avg_game_length,std_game_length,invalid_fallbacks
-experimental_board_size_transfer,5,0,Random Agent,True,200,190,10,0.95,100,96,0.96,100,94,0.94,11.16,3.358690819367049,0
-experimental_board_size_transfer,6,0,Random Agent,True,200,193,7,0.965,100,99,0.99,100,94,0.94,13.835,5.158568517110988,0
-experimental_board_size_transfer,7,0,Random Agent,True,200,197,3,0.985,100,99,0.99,100,98,0.98,15.925,5.34436019834444,0
-experimental_board_size_transfer,8,0,Random Agent,True,200,90,110,0.45,100,43,0.43,100,47,0.47,60.6,3.7936736547830483,0
-experimental_board_size_transfer,9,0,Random Agent,True,200,98,102,0.49,100,48,0.48,100,50,0.5,75.01,4.71391610289424,0
-unseen_starting_positions,7,0,Random Agent,False,200,195,5,0.975,100,99,0.99,100,96,0.96,16.175,5.8010893969111335,0
-unseen_starting_positions,7,2,Random Agent,False,200,194,6,0.97,100,97,0.97,100,97,0.97,19.43,6.750030709031206,0
-unseen_starting_positions,7,4,Random Agent,False,200,192,8,0.96,100,97,0.97,100,95,0.95,22.18,7.905064848010814,0
-unseen_starting_positions,7,6,Random Agent,False,200,180,20,0.9,100,93,0.93,100,87,0.87,25.44,8.614373870800458,0
-unseen_starting_positions,7,8,Random Agent,False,200,185,15,0.925,100,95,0.95,100,90,0.9,26.505,7.923628870180745,0
-random_seed_opponent_variations,7,0,Random Agent seed 123,False,200,196,4,0.98,100,97,0.97,100,99,0.99,16.45,6.364750604010835,0
-random_seed_opponent_variations,7,0,Random Agent seed 2026,False,200,197,3,0.985,100,99,0.99,100,98,0.98,15.985,5.5821660571365355,0
-random_seed_opponent_variations,7,0,Random Agent seed 42,False,200,200,0,1.0,100,100,1.0,100,100,1.0,15.87,5.4930838196086365,0
-random_seed_opponent_variations,7,0,Random Agent seed 9001,False,200,195,5,0.975,100,98,0.98,100,97,0.97,16.555,6.29724155930844,0
+experimental_board_size_transfer,5,0,Center/Greedy Agent,True,200,200,0,1.0,100,100,1.0,100,100,1.0,9.5,0.5012547071170855,0
+experimental_board_size_transfer,5,0,Random Agent,True,200,155,45,0.775,100,81,0.81,100,74,0.74,12.525,5.117648545295567,0
+experimental_board_size_transfer,6,0,Center/Greedy Agent,True,200,200,0,1.0,100,100,1.0,100,100,1.0,15.5,4.511292364053769,0
+experimental_board_size_transfer,6,0,Random Agent,True,200,140,60,0.7,100,80,0.8,100,60,0.6,20.7,8.682564982386648,0
+experimental_board_size_transfer,7,0,Center/Greedy Agent,True,200,200,0,1.0,100,100,1.0,100,100,1.0,13.5,0.5012547071170855,0
+experimental_board_size_transfer,7,0,Random Agent,True,200,194,6,0.97,100,97,0.97,100,97,0.97,16.19,6.506579584501156,0
+experimental_board_size_transfer,8,0,Center/Greedy Agent,True,200,183,17,0.915,100,86,0.86,100,97,0.97,59.135,3.2075249150087695,0
+experimental_board_size_transfer,8,0,Random Agent,True,200,96,104,0.48,100,37,0.37,100,59,0.59,60.75,4.3729984653426826,0
+experimental_board_size_transfer,9,0,Center/Greedy Agent,True,200,186,14,0.93,100,99,0.99,100,87,0.87,68.91,6.869340521183958,0
+experimental_board_size_transfer,9,0,Random Agent,True,200,110,90,0.55,100,64,0.64,100,46,0.46,74.5,5.671049640066686,0
+random_seed_opponent_variations,7,0,Random Agent seed 123,False,200,190,10,0.95,100,98,0.98,100,92,0.92,16.45,7.987899139530781,0
+random_seed_opponent_variations,7,0,Random Agent seed 2026,False,200,184,16,0.92,100,94,0.94,100,90,0.9,17.95,9.002372663239353,0
+random_seed_opponent_variations,7,0,Random Agent seed 42,False,200,192,8,0.96,100,97,0.97,100,95,0.95,16.91,7.7174930186209,0
+random_seed_opponent_variations,7,0,Random Agent seed 9001,False,200,189,11,0.945,100,97,0.97,100,92,0.92,17.025,7.732615450708947,0
+unseen_starting_positions,7,0,Center/Greedy Agent,False,200,200,0,1.0,100,100,1.0,100,100,1.0,13.5,0.5012547071170855,0
+unseen_starting_positions,7,0,Random Agent,False,200,189,11,0.945,100,97,0.97,100,92,0.92,16.925,8.232145290287459,0
+unseen_starting_positions,7,2,Center/Greedy Agent,False,200,198,2,0.99,100,100,1.0,100,98,0.98,16.54,3.691413369336546,0
+unseen_starting_positions,7,2,Random Agent,False,200,189,11,0.945,100,95,0.95,100,94,0.94,20.405,8.501904900354587,0
+unseen_starting_positions,7,4,Center/Greedy Agent,False,200,195,5,0.975,100,100,1.0,100,95,0.95,19.205,5.15030125478844,0
+unseen_starting_positions,7,4,Random Agent,False,200,183,17,0.915,100,94,0.94,100,89,0.89,24.495,10.473223815302866,0
+unseen_starting_positions,7,6,Center/Greedy Agent,False,200,190,10,0.95,100,99,0.99,100,91,0.91,22.03,6.12754715778298,0
+unseen_starting_positions,7,6,Random Agent,False,200,166,34,0.83,100,87,0.87,100,79,0.79,27.6,10.66153561681162,0
+unseen_starting_positions,7,8,Center/Greedy Agent,False,200,182,18,0.91,100,95,0.95,100,87,0.87,24.53,6.844951923437511,0
+unseen_starting_positions,7,8,Random Agent,False,200,165,35,0.825,100,88,0.88,100,77,0.77,30.065,9.766663379467891,0

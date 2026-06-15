@@ -6,33 +6,29 @@ This script evaluates a trained 7x7 model under:
 2. Unseen starting positions
 3. Opponent variations
 
+Opponents:
+    - Random Agent
+    - Center/Greedy Agent
+    - Random Agent variants with different seeds
+
 Important:
 The trained model has a fixed 7x7 action space with 49 outputs.
 Therefore, direct transfer to other board sizes is not supported.
-However, this script also runs an experimental board-size transfer by projecting
-other board sizes into the trained 7x7 input space:
 
+For board sizes different from 7x7, this script runs an experimental transfer:
     smaller boards -> centered/padded into 7x7
     larger boards  -> center crop into 7x7
 
 This is an exploratory zero-shot transfer experiment, not a true size-invariant model.
 
-Opponent setup:
-Only Random Agent is used.
-Opponent variations are implemented as Random Agent variants with different seeds.
-
-Outputs:
-    results/phase6_zero_shot_board_size_compatibility.csv
-    results/phase6_zero_shot_experimental_board_size_transfer_results.csv
-    results/phase6_zero_shot_experimental_board_size_transfer_summary.csv
-    results/phase6_zero_shot_starting_positions_results.csv
-    results/phase6_zero_shot_starting_positions_summary.csv
-    results/phase6_zero_shot_random_seed_variations_results.csv
-    results/phase6_zero_shot_random_seed_variations_summary.csv
+Main outputs:
+    results/phase6_zero_shot_results.csv
     results/phase6_zero_shot_summary.csv
+    results/phase6_zero_shot_board_size_compatibility.csv
 
+Plots:
     results/phase6_zero_shot_board_size_compatibility.png
-    results/phase6_zero_shot_experimental_board_size_transfer.png
+    results/phase6_zero_shot_board_size_transfer.png
     results/phase6_zero_shot_starting_positions.png
     results/phase6_zero_shot_random_seed_variations.png
 """
@@ -51,6 +47,7 @@ import torch
 
 from hex_engine import hexPosition, RED, BLUE, EMPTY
 from models import DQN, ConvDQN, board_to_tensor, board_to_spatial_tensor
+from agents import center_agent
 
 
 # ============================================================
@@ -61,10 +58,17 @@ TRAINED_BOARD_SIZE = 7
 TRAINED_ACTION_SPACE = TRAINED_BOARD_SIZE * TRAINED_BOARD_SIZE
 RESULTS_DIR = "results"
 
-DEFAULT_FINAL_MODEL_PATH = "results/phase5_cnn_reward_shaping_soft_path_block_7x7.pt"
-DEFAULT_BEST_MODEL_PATH = "results/phase5_cnn_reward_shaping_soft_path_block_7x7_best.pt"
+DEFAULT_FINAL_MODEL_PATH = (
+    "results/phase5_cnn_mixed_random_center_reward_shaping_soft_path_block_7x7.pt"
+)
+
+DEFAULT_BEST_MODEL_PATH = (
+    "results/phase5_cnn_mixed_random_center_reward_shaping_soft_path_block_7x7_best.pt"
+)
 
 FALLBACK_MODEL_PATHS = [
+    "results/phase5_cnn_mixed_random_center_reward_shaping_soft_path_block_7x7.pt",
+    "results/phase5_cnn_mixed_random_center_reward_shaping_soft_path_block_7x7_best.pt",
     "results/phase5_cnn_reward_shaping_soft_path_block_7x7.pt",
     "results/phase5_cnn_reward_shaping_soft_path_block_7x7_best.pt",
     "results/phase5_cnn_reward_shaping_path_block_7x7.pt",
@@ -94,6 +98,7 @@ def select_model_path(checkpoint_type, explicit_model_path):
     if explicit_model_path is not None:
         if not os.path.exists(explicit_model_path):
             raise FileNotFoundError(f"Explicit model path not found: {explicit_model_path}")
+
         return explicit_model_path
 
     if checkpoint_type == "final" and os.path.exists(DEFAULT_FINAL_MODEL_PATH):
@@ -113,11 +118,6 @@ def select_model_path(checkpoint_type, explicit_model_path):
 
 
 def extract_checkpoint_data(checkpoint):
-    """
-    Supports:
-        torch.save(model.state_dict(), path)
-        torch.save({"model_state_dict": ..., "board_size": ..., "use_cnn": ...}, path)
-    """
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
         state_dict = checkpoint["model_state_dict"]
         metadata = checkpoint
@@ -149,10 +149,6 @@ def infer_architecture_from_state_dict(state_dict, metadata):
 
 
 def load_checkpoint_model(model_path, device):
-    """
-    Always loads the trained model as a 7x7 model.
-    This is necessary because the checkpoint output layer has 49 actions.
-    """
     checkpoint = torch.load(model_path, map_location=device)
     state_dict, metadata = extract_checkpoint_data(checkpoint)
 
@@ -161,7 +157,7 @@ def load_checkpoint_model(model_path, device):
     if checkpoint_board_size != TRAINED_BOARD_SIZE:
         raise RuntimeError(
             f"Checkpoint board size is {checkpoint_board_size}, "
-            f"but this zero-shot script expects a trained 7x7 model."
+            f"but this script expects a trained 7x7 model."
         )
 
     use_cnn = infer_architecture_from_state_dict(state_dict, metadata)
@@ -181,7 +177,6 @@ def load_checkpoint_model(model_path, device):
 
 # ============================================================
 # Canonical board logic
-# Same logic as Phase 4 / Phase 5 evaluation
 # ============================================================
 
 def transform_move_for_blue(move, board_size):
@@ -230,22 +225,12 @@ def inverse_canonical_move(move, player, board_size):
 # ============================================================
 
 def project_board_to_7x7(board):
-    """
-    Project an arbitrary board into 7x7 trained input space.
-
-    If board is smaller than 7x7:
-        place it into the center/top-left-centered part of a 7x7 empty board.
-
-    If board is larger than 7x7:
-        use a center crop.
-
-    Returns:
-        projected_board,
-        metadata dict with mode and offsets.
-    """
     source_size = len(board)
 
-    projected = [[EMPTY for _ in range(TRAINED_BOARD_SIZE)] for _ in range(TRAINED_BOARD_SIZE)]
+    projected = [
+        [EMPTY for _ in range(TRAINED_BOARD_SIZE)]
+        for _ in range(TRAINED_BOARD_SIZE)
+    ]
 
     if source_size == TRAINED_BOARD_SIZE:
         return board, {
@@ -286,11 +271,6 @@ def project_board_to_7x7(board):
 
 
 def project_move_to_7x7(move, projection_info):
-    """
-    Map a move from source board coordinates into projected 7x7 coordinates.
-
-    Returns None if the move is outside the 7x7 crop for larger boards.
-    """
     row, col = move
     source_size = projection_info["source_size"]
     row_offset = projection_info["row_offset"]
@@ -312,33 +292,11 @@ def project_move_to_7x7(move, projection_info):
     return None
 
 
-def inverse_project_move_from_7x7(projected_move, projection_info):
-    """
-    Map a selected 7x7 projected move back to source board coordinates.
-    """
-    row, col = projected_move
-    source_size = projection_info["source_size"]
-    row_offset = projection_info["row_offset"]
-    col_offset = projection_info["col_offset"]
-    mode = projection_info["mode"]
-
-    if mode == "native_7x7":
-        return projected_move
-
-    if source_size < TRAINED_BOARD_SIZE:
-        return row - row_offset, col - col_offset
-
-    return row + row_offset, col + col_offset
-
-
 # ============================================================
 # DQN move selection
 # ============================================================
 
 def dqn_select_move_native_7x7(board, action_set, player, model, use_cnn, device):
-    """
-    Standard selection for native 7x7 evaluation.
-    """
     if not action_set:
         return None
 
@@ -376,20 +334,6 @@ def dqn_select_move_native_7x7(board, action_set, player, model, use_cnn, device
 
 
 def dqn_select_move_experimental_transfer(board, action_set, player, model, use_cnn, device):
-    """
-    Experimental move selection for arbitrary board sizes.
-
-    Steps:
-        1. Convert board to canonical current-player perspective.
-        2. Project/crop/pad canonical board into 7x7.
-        3. Project valid canonical actions into 7x7.
-        4. Select best Q-value among projected valid actions.
-        5. Map selected action back to source board.
-        6. Invert canonical move back to real board orientation.
-
-    For boards larger than 7x7, moves outside the center crop cannot be selected.
-    If no valid move lies in the projected 7x7 crop, we fall back to random.
-    """
     if not action_set:
         return None
 
@@ -415,11 +359,13 @@ def dqn_select_move_experimental_transfer(board, action_set, player, model, use_
     for canonical_move in canonical_actions:
         projected_move = project_move_to_7x7(canonical_move, projection_info)
 
-        if projected_move is not None:
-            pr, pc = projected_move
+        if projected_move is None:
+            continue
 
-            if 0 <= pr < TRAINED_BOARD_SIZE and 0 <= pc < TRAINED_BOARD_SIZE:
-                projected_action_pairs.append((canonical_move, projected_move))
+        pr, pc = projected_move
+
+        if 0 <= pr < TRAINED_BOARD_SIZE and 0 <= pc < TRAINED_BOARD_SIZE:
+            projected_action_pairs.append((canonical_move, projected_move))
 
     if not projected_action_pairs:
         return random.choice(action_set)
@@ -444,7 +390,11 @@ def dqn_select_move_experimental_transfer(board, action_set, player, model, use_
             best_value = value
             best_canonical_move = canonical_move
 
-    real_move = inverse_canonical_move(best_canonical_move, player, source_board_size)
+    real_move = inverse_canonical_move(
+        best_canonical_move,
+        player,
+        source_board_size,
+    )
 
     if real_move not in action_set:
         return random.choice(action_set)
@@ -453,19 +403,13 @@ def dqn_select_move_experimental_transfer(board, action_set, player, model, use_
 
 
 # ============================================================
-# Random opponent only
+# Opponents
 # ============================================================
 
-class SeededRandomOpponent:
-    """
-    Random Agent variant with its own seed.
-    Used for opponent variations without introducing other agent types.
-    """
-
-    def __init__(self, seed: int):
-        self.seed = seed
-        self.name = f"Random Agent seed {seed}"
-        self.rng = random.Random(seed)
+class RandomOpponent:
+    def __init__(self, seed=None, name="Random Agent"):
+        self.name = name
+        self.rng = random.Random(seed) if seed is not None else random
 
     def select_move(self, board, action_set):
         if not action_set:
@@ -474,11 +418,15 @@ class SeededRandomOpponent:
         return self.rng.choice(action_set)
 
 
-def random_opponent_move(board, action_set):
-    if not action_set:
-        return None
+class CenterGreedyOpponent:
+    def __init__(self):
+        self.name = "Center/Greedy Agent"
 
-    return random.choice(action_set)
+    def select_move(self, board, action_set):
+        if not action_set:
+            return None
+
+        return center_agent(board, action_set)
 
 
 # ============================================================
@@ -486,13 +434,7 @@ def random_opponent_move(board, action_set):
 # ============================================================
 
 def apply_unseen_starting_position(game, num_prefilled_stones, seed):
-    """
-    Apply random legal moves before evaluation starts.
-    Uses hexPosition.move(), so player switching and winner detection stay consistent
-    with the original game engine.
-    """
     rng = random.Random(seed)
-    applied_moves = []
 
     for _ in range(num_prefilled_stones):
         if game.winner != EMPTY:
@@ -505,13 +447,10 @@ def apply_unseen_starting_position(game, num_prefilled_stones, seed):
 
         move = rng.choice(action_set)
         game.move(move)
-        applied_moves.append(move)
-
-    return applied_moves
 
 
 # ============================================================
-# Game simulation
+# Game simulation and evaluation
 # ============================================================
 
 def count_stones(board):
@@ -524,9 +463,9 @@ def play_game(
     use_cnn,
     board_size,
     device,
+    opponent,
     start_stones=0,
     seed=42,
-    opponent=None,
     experimental_board_transfer=False,
 ):
     game = hexPosition(size=board_size)
@@ -567,10 +506,7 @@ def play_game(
                     device=device,
                 )
         else:
-            if opponent is None:
-                move = random_opponent_move(game.board, action_set)
-            else:
-                move = opponent.select_move(game.board, action_set)
+            move = opponent.select_move(game.board, action_set)
 
         if move not in action_set:
             invalid_fallbacks += 1
@@ -601,12 +537,11 @@ def evaluate_setting(
     start_stones,
     seed,
     opponent_name,
-    opponent_factory=None,
+    opponent_factory,
     experimental_board_transfer=False,
 ):
     rows = []
-
-    opponent = opponent_factory() if opponent_factory is not None else None
+    opponent = opponent_factory()
 
     for game_id in range(episodes):
         dqn_color = RED if game_id % 2 == 0 else BLUE
@@ -618,9 +553,9 @@ def evaluate_setting(
             use_cnn=use_cnn,
             board_size=board_size,
             device=device,
+            opponent=opponent,
             start_stones=start_stones,
             seed=episode_seed,
-            opponent=opponent,
             experimental_board_transfer=experimental_board_transfer,
         )
 
@@ -810,64 +745,97 @@ def plot_board_size_compatibility(df, output_dir):
     plt.ylabel("Direct compatibility")
     plt.title("Phase 6A: Direct Board Size Compatibility")
     plt.tight_layout()
-    plt.savefig(
-        os.path.join(output_dir, "phase6_zero_shot_board_size_compatibility.png"),
-        dpi=150,
-    )
+
+    path = os.path.join(RESULTS_DIR, "phase6_zero_shot_board_size_compatibility.png")
+    plt.savefig(path, dpi=150)
     plt.close()
 
 
-def plot_experimental_board_size_transfer(summary_df, output_dir):
-    plot_df = summary_df.sort_values("board_size")
+def plot_board_size_transfer(summary_df):
+    plot_df = summary_df[
+        summary_df["experiment"] == "experimental_board_size_transfer"
+    ].sort_values(["opponent", "board_size"])
+
+    if plot_df.empty:
+        return
 
     plt.figure(figsize=(8, 5))
-    plt.plot(plot_df["board_size"], plot_df["win_rate"], marker="o")
+
+    for opponent_name in sorted(plot_df["opponent"].unique()):
+        subset = plot_df[plot_df["opponent"] == opponent_name]
+
+        plt.plot(
+            subset["board_size"],
+            subset["win_rate"],
+            marker="o",
+            label=opponent_name,
+        )
+
     plt.ylim(0, 1)
     plt.xlabel("Board size")
     plt.ylabel("DQN win rate")
-    plt.title("Phase 6A: Experimental Board-Size Transfer via 7x7 Projection")
+    plt.title("Phase 6A: Board-Size Transfer")
     plt.grid(True, alpha=0.3)
+    plt.legend()
     plt.tight_layout()
-    plt.savefig(
-        os.path.join(output_dir, "phase6_zero_shot_experimental_board_size_transfer.png"),
-        dpi=150,
-    )
+
+    path = os.path.join(RESULTS_DIR, "phase6_zero_shot_board_size_transfer.png")
+    plt.savefig(path, dpi=150)
     plt.close()
 
 
-def plot_starting_positions(summary_df, output_dir):
-    plot_df = summary_df.sort_values("start_stones")
+def plot_starting_positions(summary_df):
+    plot_df = summary_df[
+        summary_df["experiment"] == "unseen_starting_positions"
+    ].sort_values(["opponent", "start_stones"])
+
+    if plot_df.empty:
+        return
 
     plt.figure(figsize=(8, 5))
-    plt.plot(plot_df["start_stones"], plot_df["win_rate"], marker="o")
+
+    for opponent_name in sorted(plot_df["opponent"].unique()):
+        subset = plot_df[plot_df["opponent"] == opponent_name]
+
+        plt.plot(
+            subset["start_stones"],
+            subset["win_rate"],
+            marker="o",
+            label=opponent_name,
+        )
+
     plt.ylim(0, 1)
     plt.xlabel("Number of random pre-filled stones")
     plt.ylabel("DQN win rate")
-    plt.title("Phase 6A: Zero-shot Performance on Unseen Starting Positions")
+    plt.title("Phase 6A: Unseen Starting Positions")
     plt.grid(True, alpha=0.3)
+    plt.legend()
     plt.tight_layout()
-    plt.savefig(
-        os.path.join(output_dir, "phase6_zero_shot_starting_positions.png"),
-        dpi=150,
-    )
+
+    path = os.path.join(RESULTS_DIR, "phase6_zero_shot_starting_positions.png")
+    plt.savefig(path, dpi=150)
     plt.close()
 
 
-def plot_random_seed_variations(summary_df, output_dir):
-    plot_df = summary_df.sort_values("opponent")
+def plot_random_seed_variations(summary_df):
+    plot_df = summary_df[
+        summary_df["experiment"] == "random_seed_opponent_variations"
+    ].sort_values("opponent")
+
+    if plot_df.empty:
+        return
 
     plt.figure(figsize=(9, 5))
     plt.bar(plot_df["opponent"], plot_df["win_rate"])
     plt.ylim(0, 1)
     plt.xlabel("Random opponent variant")
     plt.ylabel("DQN win rate")
-    plt.title("Phase 6A: Zero-shot Performance Against Random Seed Variations")
+    plt.title("Phase 6A: Random Seed Variations")
     plt.xticks(rotation=20, ha="right")
     plt.tight_layout()
-    plt.savefig(
-        os.path.join(output_dir, "phase6_zero_shot_random_seed_variations.png"),
-        dpi=150,
-    )
+
+    path = os.path.join(RESULTS_DIR, "phase6_zero_shot_random_seed_variations.png")
+    plt.savefig(path, dpi=150)
     plt.close()
 
 
@@ -892,10 +860,7 @@ def main():
         type=str,
         choices=["final", "best"],
         default="final",
-        help=(
-            "Which Phase 5 checkpoint to use if --model-path is not provided. "
-            "Default is 'final' because it matches the standard Phase 5 evaluation file."
-        ),
+        help="Which checkpoint to use if --model-path is not provided.",
     )
 
     parser.add_argument(
@@ -963,13 +928,10 @@ def main():
     print(f"Trained board size: {TRAINED_BOARD_SIZE}x{TRAINED_BOARD_SIZE}")
     print(f"Model action space: {TRAINED_ACTION_SPACE}")
     print(f"Episodes per setting: {args.episodes}")
-    print("Opponent setup: Random Agent only")
-    print("Board-size transfer: experimental 7x7 projection/crop/padding")
+    print("Opponents: Random Agent + Center/Greedy Agent")
+    print("Result files are combined into one results CSV and one summary CSV.")
     print("=" * 80)
 
-    # ------------------------------------------------------------
-    # 1A. Direct board-size compatibility check
-    # ------------------------------------------------------------
     board_compatibility_df = evaluate_board_size_compatibility(
         board_sizes=args.board_sizes,
         model_path=model_path,
@@ -984,97 +946,58 @@ def main():
     board_compatibility_df.to_csv(board_compatibility_path, index=False)
     plot_board_size_compatibility(board_compatibility_df, RESULTS_DIR)
 
-    # ------------------------------------------------------------
-    # 1B. Experimental board-size transfer against Random Agent
-    # ------------------------------------------------------------
-    board_size_transfer_results = []
+    result_frames = []
 
+    standard_opponents = [
+        ("Random Agent", lambda: RandomOpponent()),
+        ("Center/Greedy Agent", lambda: CenterGreedyOpponent()),
+    ]
+
+    # ------------------------------------------------------------
+    # 1. Experimental board-size transfer
+    # ------------------------------------------------------------
     for board_size in args.board_sizes:
-        result_df = evaluate_setting(
-            experiment="experimental_board_size_transfer",
-            model=model,
-            use_cnn=use_cnn,
-            board_size=board_size,
-            device=device,
-            episodes=args.episodes,
-            start_stones=0,
-            seed=args.seed,
-            opponent_name="Random Agent",
-            opponent_factory=None,
-            experimental_board_transfer=True,
-        )
+        for opponent_name, opponent_factory in standard_opponents:
+            result_df = evaluate_setting(
+                experiment="experimental_board_size_transfer",
+                model=model,
+                use_cnn=use_cnn,
+                board_size=board_size,
+                device=device,
+                episodes=args.episodes,
+                start_stones=0,
+                seed=args.seed,
+                opponent_name=opponent_name,
+                opponent_factory=opponent_factory,
+                experimental_board_transfer=True,
+            )
 
-        board_size_transfer_results.append(result_df)
-
-    board_size_transfer_results_df = pd.concat(
-        board_size_transfer_results,
-        ignore_index=True,
-    )
-
-    board_size_transfer_summary_df = summarize_results(board_size_transfer_results_df)
-
-    board_size_transfer_results_path = os.path.join(
-        RESULTS_DIR,
-        "phase6_zero_shot_experimental_board_size_transfer_results.csv",
-    )
-
-    board_size_transfer_summary_path = os.path.join(
-        RESULTS_DIR,
-        "phase6_zero_shot_experimental_board_size_transfer_summary.csv",
-    )
-
-    board_size_transfer_results_df.to_csv(board_size_transfer_results_path, index=False)
-    board_size_transfer_summary_df.to_csv(board_size_transfer_summary_path, index=False)
-    plot_experimental_board_size_transfer(board_size_transfer_summary_df, RESULTS_DIR)
+            result_frames.append(result_df)
 
     # ------------------------------------------------------------
-    # 2. Unseen starting positions on native 7x7 against Random Agent
+    # 2. Unseen starting positions on native 7x7
     # ------------------------------------------------------------
-    starting_position_results = []
-
     for start_stones in args.start_stones:
-        result_df = evaluate_setting(
-            experiment="unseen_starting_positions",
-            model=model,
-            use_cnn=use_cnn,
-            board_size=TRAINED_BOARD_SIZE,
-            device=device,
-            episodes=args.episodes,
-            start_stones=start_stones,
-            seed=args.seed,
-            opponent_name="Random Agent",
-            opponent_factory=None,
-            experimental_board_transfer=False,
-        )
+        for opponent_name, opponent_factory in standard_opponents:
+            result_df = evaluate_setting(
+                experiment="unseen_starting_positions",
+                model=model,
+                use_cnn=use_cnn,
+                board_size=TRAINED_BOARD_SIZE,
+                device=device,
+                episodes=args.episodes,
+                start_stones=start_stones,
+                seed=args.seed,
+                opponent_name=opponent_name,
+                opponent_factory=opponent_factory,
+                experimental_board_transfer=False,
+            )
 
-        starting_position_results.append(result_df)
-
-    starting_position_results_df = pd.concat(
-        starting_position_results,
-        ignore_index=True,
-    )
-
-    starting_position_summary_df = summarize_results(starting_position_results_df)
-
-    starting_results_path = os.path.join(
-        RESULTS_DIR,
-        "phase6_zero_shot_starting_positions_results.csv",
-    )
-
-    starting_summary_path = os.path.join(
-        RESULTS_DIR,
-        "phase6_zero_shot_starting_positions_summary.csv",
-    )
-
-    starting_position_results_df.to_csv(starting_results_path, index=False)
-    starting_position_summary_df.to_csv(starting_summary_path, index=False)
-    plot_starting_positions(starting_position_summary_df, RESULTS_DIR)
+            result_frames.append(result_df)
 
     # ------------------------------------------------------------
-    # 3. Opponent variations: Random Agent with different seeds
+    # 3. Random Agent seed variations
     # ------------------------------------------------------------
-    seed_variation_results = []
-
     for opponent_seed in args.opponent_seeds:
         result_df = evaluate_setting(
             experiment="random_seed_opponent_variations",
@@ -1086,88 +1009,61 @@ def main():
             start_stones=0,
             seed=args.seed,
             opponent_name=f"Random Agent seed {opponent_seed}",
-            opponent_factory=lambda s=opponent_seed: SeededRandomOpponent(seed=s),
+            opponent_factory=lambda s=opponent_seed: RandomOpponent(
+                seed=s,
+                name=f"Random Agent seed {s}",
+            ),
             experimental_board_transfer=False,
         )
 
-        seed_variation_results.append(result_df)
+        result_frames.append(result_df)
 
-    seed_variation_results_df = pd.concat(
-        seed_variation_results,
-        ignore_index=True,
-    )
+    results_df = pd.concat(result_frames, ignore_index=True)
+    summary_df = summarize_results(results_df)
 
-    seed_variation_summary_df = summarize_results(seed_variation_results_df)
-
-    seed_variation_results_path = os.path.join(
+    results_path = os.path.join(
         RESULTS_DIR,
-        "phase6_zero_shot_random_seed_variations_results.csv",
+        "phase6_zero_shot_results.csv",
     )
 
-    seed_variation_summary_path = os.path.join(
-        RESULTS_DIR,
-        "phase6_zero_shot_random_seed_variations_summary.csv",
-    )
-
-    seed_variation_results_df.to_csv(seed_variation_results_path, index=False)
-    seed_variation_summary_df.to_csv(seed_variation_summary_path, index=False)
-    plot_random_seed_variations(seed_variation_summary_df, RESULTS_DIR)
-
-    # ------------------------------------------------------------
-    # Combined summary
-    # ------------------------------------------------------------
-    combined_summary_df = pd.concat(
-        [
-            board_size_transfer_summary_df,
-            starting_position_summary_df,
-            seed_variation_summary_df,
-        ],
-        ignore_index=True,
-    )
-
-    combined_summary_path = os.path.join(
+    summary_path = os.path.join(
         RESULTS_DIR,
         "phase6_zero_shot_summary.csv",
     )
 
-    combined_summary_df.to_csv(combined_summary_path, index=False)
+    results_df.to_csv(results_path, index=False)
+    summary_df.to_csv(summary_path, index=False)
+
+    plot_board_size_transfer(summary_df)
+    plot_starting_positions(summary_df)
+    plot_random_seed_variations(summary_df)
 
     print("\nDirect board size compatibility:")
     print(board_compatibility_df.to_string(index=False))
 
-    print("\nExperimental board-size transfer summary:")
-    print(board_size_transfer_summary_df.to_string(index=False))
-
-    print("\nUnseen starting positions summary:")
-    print(starting_position_summary_df.to_string(index=False))
-
-    print("\nRandom seed opponent variations summary:")
-    print(seed_variation_summary_df.to_string(index=False))
+    print("\nCombined Phase 6 zero-shot summary:")
+    print(summary_df.to_string(index=False))
 
     print("\nSaved files:")
+    print(f"  {results_path}")
+    print(f"  {summary_path}")
     print(f"  {board_compatibility_path}")
-    print(f"  {board_size_transfer_results_path}")
-    print(f"  {board_size_transfer_summary_path}")
-    print(f"  {starting_results_path}")
-    print(f"  {starting_summary_path}")
-    print(f"  {seed_variation_results_path}")
-    print(f"  {seed_variation_summary_path}")
-    print(f"  {combined_summary_path}")
     print(f"  {os.path.join(RESULTS_DIR, 'phase6_zero_shot_board_size_compatibility.png')}")
-    print(f"  {os.path.join(RESULTS_DIR, 'phase6_zero_shot_experimental_board_size_transfer.png')}")
+    print(f"  {os.path.join(RESULTS_DIR, 'phase6_zero_shot_board_size_transfer.png')}")
     print(f"  {os.path.join(RESULTS_DIR, 'phase6_zero_shot_starting_positions.png')}")
     print(f"  {os.path.join(RESULTS_DIR, 'phase6_zero_shot_random_seed_variations.png')}")
 
     print("\nInterpretation note:")
     print(
-        "The gameplay evaluation uses the original hex_engine.hexPosition and the same "
-        "canonical RED/BLUE transformation used in the standard Phase 5 evaluation. "
-        "The trained DQN/ConvDQN checkpoint has a fixed 7x7 output layer with 49 actions. "
-        "Therefore, direct transfer to other board sizes is not supported. "
-        "For Phase 6A, different board sizes are additionally evaluated with an experimental "
-        "projection/crop/padding transfer into the trained 7x7 input space. "
-        "Opponent variations are implemented only with Random Agent variants using different seeds."
+        "This Phase 6A evaluation keeps the zero-shot task separate from the standard "
+        "Phase 5 baseline evaluation. The standard 7x7 Random and Center/Greedy results "
+        "remain in evaluate_phase4.py. This script evaluates zero-shot behavior across "
+        "board sizes, unseen starting positions, and random seed variations. Random Agent "
+        "and Center/Greedy Agent are included where meaningful. All Phase 6 result rows are "
+        "stored in one combined results CSV, and all grouped metrics are stored in one "
+        "combined summary CSV."
     )
+
     print("=" * 80)
 
 

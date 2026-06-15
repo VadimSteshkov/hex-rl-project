@@ -26,6 +26,8 @@ RESULTS_DIR = "results"
 # True  = evaluate best checkpoint saved during training
 LOAD_BEST_MODEL = False
 
+SEED = 42
+
 
 # =========================
 # Experiment naming
@@ -33,7 +35,10 @@ LOAD_BEST_MODEL = False
 
 ARCH_NAME = "cnn" if USE_CNN else "mlp"
 SHAPING_NAME = "reward_shaping_soft_path_block" if USE_REWARD_SHAPING else "no_shaping"
-EXPERIMENT_NAME = f"phase5_{ARCH_NAME}_{SHAPING_NAME}_{BOARD_SIZE}x{BOARD_SIZE}"
+
+# IMPORTANT:
+# This must match the experiment name from the new mixed-opponent training file.
+EXPERIMENT_NAME = f"phase5_{ARCH_NAME}_mixed_random_center_{SHAPING_NAME}_{BOARD_SIZE}x{BOARD_SIZE}"
 
 MODEL_FILE = f"{EXPERIMENT_NAME}.pt"
 BEST_MODEL_FILE = f"{EXPERIMENT_NAME}_best.pt"
@@ -54,6 +59,14 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # =========================
 # Helper functions
 # =========================
+
+def set_seed(seed=42):
+    random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
 
 def transform_move_for_blue(move, board_size):
     row, col = move
@@ -223,6 +236,8 @@ def evaluate_against(opponent_name, opponent_agent, model):
 # =========================
 
 def main():
+    set_seed(SEED)
+
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(
             f"Model not found: {MODEL_PATH}. "

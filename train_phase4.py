@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from hex_engine import hexPosition, RED, BLUE, EMPTY
 from models import DQN, ConvDQN, board_to_spatial_tensor
 from augmentation import augment_transitions_list
+from agents import center_agent
 
 
 # =========================
@@ -58,6 +59,13 @@ BLOCK_REWARD_WEIGHT = 0.01
 # Clip shaped reward to keep intermediate rewards stable.
 SHAPED_REWARD_CLIP = 0.05
 
+# Mixed opponent training
+# The agent is trained against both Random and Center/Greedy opponents.
+# This should keep performance against Random high while improving against Center/Greedy.
+USE_MIXED_OPPONENTS = True
+RANDOM_OPPONENT_PROB = 0.5
+CENTER_OPPONENT_PROB = 0.5
+
 RESULTS_DIR = "results"
 
 # Phase 5E: training stability and monitoring
@@ -76,7 +84,7 @@ BEST_MODEL_MIN_EPISODES = 500
 ARCH_NAME = "cnn" if USE_CNN else "mlp"
 SHAPING_NAME = "reward_shaping_soft_path_block" if USE_REWARD_SHAPING else "no_shaping"
 
-EXPERIMENT_NAME = f"phase5_{ARCH_NAME}_{SHAPING_NAME}_{BOARD_SIZE}x{BOARD_SIZE}"
+EXPERIMENT_NAME = f"phase5_{ARCH_NAME}_mixed_random_center_{SHAPING_NAME}_{BOARD_SIZE}x{BOARD_SIZE}"
 
 MODEL_FILE = f"{EXPERIMENT_NAME}.pt"
 CURVE_FILE = f"{EXPERIMENT_NAME}_learning_curve.png"
@@ -322,6 +330,29 @@ def choose_action(model, state, valid_actions, epsilon):
     return best_move
 
 
+def select_training_opponent_move(game):
+    """
+    Select opponent move during training.
+
+    The opponent is sampled from a mixed distribution:
+    - Random Agent
+    - Center/Greedy Agent
+    """
+
+    action_set = game.get_action_space()
+
+    if not action_set:
+        return None
+
+    if not USE_MIXED_OPPONENTS:
+        return random.choice(action_set)
+
+    if random.random() < RANDOM_OPPONENT_PROB:
+        return random.choice(action_set)
+
+    return center_agent(game.board, action_set)
+
+
 def optimize_model(policy_net, target_net, optimizer, memory):
     if len(memory) < BATCH_SIZE:
         return None
@@ -451,7 +482,7 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
 
             total_shaped_reward.append(shaped_reward)
 
-            opponent_move = random.choice(game.get_action_space())
+            opponent_move = select_training_opponent_move(game)
             game.move(opponent_move)
 
             if game.winner != EMPTY:
@@ -498,7 +529,7 @@ def play_training_episode(policy_net, target_net, optimizer, memory, epsilon, ag
                 optimizer_steps += 1
 
         else:
-            opponent_move = random.choice(game.get_action_space())
+            opponent_move = select_training_opponent_move(game)
             game.move(opponent_move)
 
     avg_loss = np.mean(total_loss) if total_loss else 0.0
@@ -527,6 +558,9 @@ def build_checkpoint(policy_net, total_episodes):
         "use_reward_shaping": USE_REWARD_SHAPING,
         "use_augmentation": USE_AUGMENTATION,
         "use_parallel": USE_PARALLEL,
+        "use_mixed_opponents": USE_MIXED_OPPONENTS,
+        "random_opponent_probability": RANDOM_OPPONENT_PROB,
+        "center_opponent_probability": CENTER_OPPONENT_PROB,
         "reward_components": [
             "center_control",
             "stone_progress",
@@ -711,6 +745,9 @@ def main():
     print(f"Reward shaping: {'ON' if USE_REWARD_SHAPING else 'OFF'}")
     print("Reward shaping components: center + stone progress + path potential + blocking")
     print(f"Shaped reward clip: +/-{SHAPED_REWARD_CLIP}")
+    print(f"Mixed opponents: {'ON' if USE_MIXED_OPPONENTS else 'OFF'}")
+    print(f"Random opponent probability: {RANDOM_OPPONENT_PROB}")
+    print(f"Center/Greedy opponent probability: {CENTER_OPPONENT_PROB}")
     print(f"Augmentation: {'ON' if USE_AUGMENTATION else 'OFF'} | Parallel: {'ON' if USE_PARALLEL else 'OFF'}")
     print(f"Model output: {MODEL_PATH}")
     print(f"Best model output: {BEST_MODEL_PATH}")

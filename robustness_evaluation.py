@@ -1,7 +1,16 @@
 """
 Robustness evaluation of the trained Hex agent under three perturbations:
 input noise, Q-value noise, and a suboptimal opponent (epsilon-random).
-Saves win rates as CSV and plots.
+
+This script uses the same model path and canonical RED/BLUE logic as
+evaluate_phase4.py. Therefore, make sure evaluate_phase4.py points to the
+mixed-opponent model before running this script.
+
+Outputs:
+    results/<experiment_name>_robustness_results.csv
+    results/<experiment_name>_robustness_input_noise.png
+    results/<experiment_name>_robustness_q_noise.png
+    results/<experiment_name>_robustness_opponent_suboptimality.png
 """
 
 import os
@@ -10,7 +19,7 @@ import random
 
 import torch
 
-from hex_engine import hexPosition, RED, BLUE, EMPTY
+from hex_engine import hexPosition, RED, EMPTY
 from models import board_to_tensor, board_to_spatial_tensor
 from agents import random_agent, center_agent
 
@@ -45,6 +54,18 @@ CSV_PATH = os.path.join(RESULTS_DIR, CSV_FILE)
 
 
 # =========================
+# Reproducibility
+# =========================
+
+def set_seed(seed=42):
+    random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+# =========================
 # Perturbed agents
 # =========================
 
@@ -53,8 +74,8 @@ def make_noisy_dqn_agent(model, input_sigma=0.0, q_sigma=0.0):
     Build a DQN agent closure that injects Gaussian noise into the input
     observation and/or the predicted Q-values before choosing the greedy move.
 
-    Mirrors evaluate_phase4.dqn_agent, with noise added at the two injection
-    points. Signature: agent(board, action_set, player) -> move.
+    Signature:
+        agent(board, action_set, player) -> move
     """
 
     def agent(board, action_set, player):
@@ -99,16 +120,20 @@ def make_noisy_dqn_agent(model, input_sigma=0.0, q_sigma=0.0):
 
 def make_epsilon_opponent(base_agent, epsilon):
     """
-    Wrap a base opponent so that with probability `epsilon` it plays a uniform
-    random valid move instead of its normal choice. epsilon = 1.0 reproduces a
-    fully random opponent; epsilon = 0.0 is the unmodified base agent.
+    Wrap a base opponent so that with probability epsilon it plays a uniform
+    random valid move instead of its normal choice.
 
-    Signature: agent(board, action_set) -> move.
+    epsilon = 0.0 -> pure base agent
+    epsilon = 1.0 -> fully random opponent
+
+    Signature:
+        agent(board, action_set) -> move
     """
 
     def agent(board, action_set):
         if epsilon > 0.0 and random.random() < epsilon:
             return random.choice(action_set)
+
         return base_agent(board, action_set)
 
     return agent
@@ -146,17 +171,22 @@ def evaluate(dqn_agent_fn, opponent_agent, n_games=N_GAMES):
     blue_games = 0
 
     for game_id in range(n_games):
-        dqn_color = RED if game_id % 2 == 0 else BLUE
+        dqn_color = RED if game_id % 2 == 0 else -RED
 
         if dqn_color == RED:
             red_games += 1
         else:
             blue_games += 1
 
-        winner = play_game(dqn_color, dqn_agent_fn, opponent_agent)
+        winner = play_game(
+            dqn_color=dqn_color,
+            dqn_agent_fn=dqn_agent_fn,
+            opponent_agent=opponent_agent,
+        )
 
         if winner == dqn_color:
             dqn_wins += 1
+
             if dqn_color == RED:
                 dqn_red_wins += 1
             else:
@@ -186,20 +216,29 @@ def run_input_noise_sweep(model, rows):
     print("-" * 60)
 
     for sigma in INPUT_NOISE_LEVELS:
-        dqn_agent_fn = make_noisy_dqn_agent(model, input_sigma=sigma)
+        dqn_agent_fn = make_noisy_dqn_agent(
+            model=model,
+            input_sigma=sigma,
+            q_sigma=0.0,
+        )
 
-        for opp_name, opp_agent in OPPONENTS:
-            result = evaluate(dqn_agent_fn, opp_agent)
+        for opponent_name, opponent_agent in OPPONENTS:
+            result = evaluate(
+                dqn_agent_fn=dqn_agent_fn,
+                opponent_agent=opponent_agent,
+            )
+
             print(
-                f"input_sigma={sigma:<5} vs {opp_name:<20} "
+                f"input_sigma={sigma:<5} vs {opponent_name:<20} "
                 f"win_rate={result['win_rate']:.3f} "
                 f"(R={result['red_win_rate']:.3f} B={result['blue_win_rate']:.3f})"
             )
+
             rows.append({
                 "test_type": "input_noise",
                 "param_name": "input_sigma",
                 "param_value": sigma,
-                "opponent": opp_name,
+                "opponent": opponent_name,
                 "games": result["games"],
                 "dqn_wins": result["dqn_wins"],
                 "win_rate": result["win_rate"],
@@ -213,20 +252,29 @@ def run_q_noise_sweep(model, rows):
     print("-" * 60)
 
     for sigma in Q_NOISE_LEVELS:
-        dqn_agent_fn = make_noisy_dqn_agent(model, q_sigma=sigma)
+        dqn_agent_fn = make_noisy_dqn_agent(
+            model=model,
+            input_sigma=0.0,
+            q_sigma=sigma,
+        )
 
-        for opp_name, opp_agent in OPPONENTS:
-            result = evaluate(dqn_agent_fn, opp_agent)
+        for opponent_name, opponent_agent in OPPONENTS:
+            result = evaluate(
+                dqn_agent_fn=dqn_agent_fn,
+                opponent_agent=opponent_agent,
+            )
+
             print(
-                f"q_sigma={sigma:<5} vs {opp_name:<20} "
+                f"q_sigma={sigma:<5} vs {opponent_name:<20} "
                 f"win_rate={result['win_rate']:.3f} "
                 f"(R={result['red_win_rate']:.3f} B={result['blue_win_rate']:.3f})"
             )
+
             rows.append({
                 "test_type": "q_noise",
                 "param_name": "q_sigma",
                 "param_value": sigma,
-                "opponent": opp_name,
+                "opponent": opponent_name,
                 "games": result["games"],
                 "dqn_wins": result["dqn_wins"],
                 "win_rate": result["win_rate"],
@@ -236,29 +284,35 @@ def run_q_noise_sweep(model, rows):
 
 
 def run_opponent_suboptimality_sweep(model, rows):
-    print("\n[3/3] Opponent suboptimality sweep (clean DQN)")
+    print("\n[3/3] Opponent suboptimality sweep")
     print("-" * 60)
 
-    dqn_agent_fn = make_noisy_dqn_agent(model)  # clean policy
+    dqn_agent_fn = make_noisy_dqn_agent(model=model)
 
-    # Constant opponent label so the sweep plots as a single line over epsilon
-    # (the epsilon value is carried by param_value).
-    opp_name = "Center/Greedy (epsilon-random)"
+    opponent_name = "Center/Greedy (epsilon-random)"
 
     for epsilon in OPPONENT_EPSILONS:
-        opp_agent = make_epsilon_opponent(center_agent, epsilon)
+        opponent_agent = make_epsilon_opponent(
+            base_agent=center_agent,
+            epsilon=epsilon,
+        )
 
-        result = evaluate(dqn_agent_fn, opp_agent)
+        result = evaluate(
+            dqn_agent_fn=dqn_agent_fn,
+            opponent_agent=opponent_agent,
+        )
+
         print(
             f"opponent_eps={epsilon:<5} "
             f"win_rate={result['win_rate']:.3f} "
             f"(R={result['red_win_rate']:.3f} B={result['blue_win_rate']:.3f})"
         )
+
         rows.append({
             "test_type": "opponent_suboptimality",
             "param_name": "opponent_epsilon",
             "param_value": epsilon,
-            "opponent": opp_name,
+            "opponent": opponent_name,
             "games": result["games"],
             "dqn_wins": result["dqn_wins"],
             "win_rate": result["win_rate"],
@@ -276,23 +330,30 @@ def plot_sweep(rows, test_type, param_name, title, filename):
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-    except Exception as exc:  # pragma: no cover - plotting is optional
-        print(f"Skipping plot '{filename}' (matplotlib unavailable: {exc})")
+    except Exception as exc:
+        print(f"Skipping plot '{filename}' because matplotlib is unavailable: {exc}")
         return
 
-    subset = [r for r in rows if r["test_type"] == test_type]
-    opponents = sorted({r["opponent"] for r in subset})
+    subset = [row for row in rows if row["test_type"] == test_type]
+    opponents = sorted({row["opponent"] for row in subset})
 
     plt.figure(figsize=(7, 5))
 
-    for opp_name in opponents:
-        opp_rows = sorted(
-            (r for r in subset if r["opponent"] == opp_name),
-            key=lambda r: r["param_value"],
+    for opponent_name in opponents:
+        opponent_rows = sorted(
+            [row for row in subset if row["opponent"] == opponent_name],
+            key=lambda row: row["param_value"],
         )
-        xs = [r["param_value"] for r in opp_rows]
-        ys = [r["win_rate"] for r in opp_rows]
-        plt.plot(xs, ys, marker="o", label=opp_name)
+
+        x_values = [row["param_value"] for row in opponent_rows]
+        y_values = [row["win_rate"] for row in opponent_rows]
+
+        plt.plot(
+            x_values,
+            y_values,
+            marker="o",
+            label=opponent_name,
+        )
 
     plt.xlabel(param_name)
     plt.ylabel("DQN win rate")
@@ -305,6 +366,7 @@ def plot_sweep(rows, test_type, param_name, title, filename):
     path = os.path.join(RESULTS_DIR, filename)
     plt.savefig(path, dpi=120)
     plt.close()
+
     print(f"Saved plot: {path}")
 
 
@@ -313,26 +375,27 @@ def plot_sweep(rows, test_type, param_name, title, filename):
 # =========================
 
 def main():
+    set_seed(SEED)
+
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(
             f"Model not found: {MODEL_PATH}. "
-            f"Run train_phase4.py first with the same experiment settings."
+            f"Make sure evaluate_phase4.py points to the mixed-opponent model."
         )
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
-
-    random.seed(SEED)
-    torch.manual_seed(SEED)
 
     print(f"Using device: {DEVICE}")
     print(f"Experiment: {EXPERIMENT_NAME}")
     print(f"Model: {'ConvDQN' if USE_CNN else 'DQN'}")
     print(f"Loading model from: {MODEL_PATH}")
     print(f"Games per setting: {N_GAMES}")
+    print(f"CSV output: {CSV_PATH}")
 
     model = load_model()
 
     rows = []
+
     run_input_noise_sweep(model, rows)
     run_q_noise_sweep(model, rows)
     run_opponent_suboptimality_sweep(model, rows)
@@ -352,32 +415,37 @@ def main():
                 "blue_win_rate",
             ],
         )
+
         writer.writeheader()
         writer.writerows(rows)
 
     print(f"\nRobustness results saved to: {CSV_PATH}")
 
     plot_sweep(
-        rows,
+        rows=rows,
         test_type="input_noise",
         param_name="input_sigma",
         title="Robustness to input noise",
         filename=f"{EXPERIMENT_NAME}_robustness_input_noise.png",
     )
+
     plot_sweep(
-        rows,
+        rows=rows,
         test_type="q_noise",
         param_name="q_sigma",
         title="Robustness to Q-signal noise",
         filename=f"{EXPERIMENT_NAME}_robustness_q_noise.png",
     )
+
     plot_sweep(
-        rows,
+        rows=rows,
         test_type="opponent_suboptimality",
         param_name="opponent_epsilon",
         title="Reaction to sub-optimal / random opponents",
         filename=f"{EXPERIMENT_NAME}_robustness_opponent_suboptimality.png",
     )
+
+    print("Robustness evaluation finished.")
 
 
 if __name__ == "__main__":
